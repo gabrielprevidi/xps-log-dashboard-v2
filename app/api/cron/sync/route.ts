@@ -90,12 +90,41 @@ export async function POST(request: NextRequest) {
     }
 
     // ── 3. Leitura (readOnly — a caixa não é alterada) ──────────────────
-    const leitura = await lerEmailsNFeImap({ dryRun, limite, marcas, dataCorte })
+    // Orçamento de tempo: o agendador gratuito corta em 30s e a Vercel em 60s.
+    // 18s de varredura deixam folga para gravar, arquivar e fechar a execução.
+    const orcamentoTotal = Number(body.orcamento_ms ?? process.env.SYNC_ORCAMENTO_MS ?? 22_000)
+    // A varredura fica com metade; a outra metade é para gravar.
+    const tScan = Date.now()
+    const leitura = await lerEmailsNFeImap({
+      dryRun, limite, marcas, dataCorte, orcamentoMs: Math.round(orcamentoTotal * 0.45),
+    })
+    const msVarredura = Date.now() - tScan
+    const temposEmail: Array<{ uid?: number; anexos: number; ms: number }> = []
 
     // ── 4. Decisão e gravação ───────────────────────────────────────────
-    const arquivar: Array<{ pasta: string; uid: number }> = []
+    // Emails ainda não gravados quando o tempo acaba: a marca d'água da pasta
+    // não pode passar deles, senão seriam pulados para sempre.
+    const pendentes = new Map<string, number>()   // pasta → menor uid não gravado
+    const marcarPendente = (pasta?: string, uid?: number) => {
+      if (!pasta || !uid) return
+      const atual = pendentes.get(pasta)
+      if (atual === undefined || uid < atual) pendentes.set(pasta, uid)
+    }
 
-    for (const email of leitura.emails) {
+    const arquivar: Array<{ pasta: string; uid: number }> = []
+    let interrompidaNaGravacao = false
+
+    // Ordem crescente de UID dentro de cada pasta — a marca d'água depende disso.
+    const fila = [...leitura.emails].sort((a, b) =>
+      (a.pasta ?? '').localeCompare(b.pasta ?? '') || (a.uid ?? 0) - (b.uid ?? 0))
+
+    for (const email of fila) {
+      // Esgotou o tempo: o que sobrou entra na próxima rodada.
+      if (!dryRun && Date.now() - t0 > orcamentoTotal) {
+        interrompidaNaGravacao = true
+        marcarPendente(email.pasta, email.uid)
+        continue
+      }
       if (dryRun) {
         const { prefiltrar } = await import('@/lib/ingestao-v2')
         const { aceitos, descartes } = await prefiltrar(email)
@@ -105,7 +134,9 @@ export async function POST(request: NextRequest) {
         continue
       }
 
+      const tEmail = Date.now()
       const r = await processarEmailV2(email)
+      temposEmail.push({ uid: email.uid, anexos: email.anexos_xml.length, ms: Date.now() - tEmail })
       if (r.aceito) {
         emailsAceitos++
         nfesSalvas += r.movimentacoes_salvas
@@ -130,6 +161,7 @@ export async function POST(request: NextRequest) {
         duracao_ms: Date.now() - t0,
         pastas_varridas: leitura.pastas_varridas,
         mensagens_examinadas: leitura.mensagens_examinadas,
+        interrompida_por_tempo: leitura.interrompida_por_tempo,
         emails_aceitos: emailsAceitos,
         emails_descartados: emailsDescartados,
         motivos_descarte: motivos,
@@ -143,27 +175,44 @@ export async function POST(request: NextRequest) {
       avisos.push(...arq.avisos)
     }
 
-    // ── 6. Marcas d'água — só depois de gravar, para não pular email em
-    //       caso de falha no meio da rodada ────────────────────────────
+    // ── 6. Marcas d'água — só depois de gravar, e nunca além do primeiro
+    //       email que ficou sem gravar ─────────────────────────────────
     for (const est of leitura.estados) {
+      const primeiroPendente = pendentes.get(est.pasta)
+      const ultimoSeguro = primeiroPendente !== undefined
+        ? Math.min(est.ultimo_uid, primeiroPendente - 1)
+        : est.ultimo_uid
+      // ultimo_uid = 0 é válido: pasta que nunca teve mensagem. Descartar esse
+      // valor fazia a pasta ser reaberta a cada rodada, para sempre.
+      if (ultimoSeguro < 0) continue
+
       const { error } = await supabase.from('sync_estado').upsert({
         id: est.pasta,
         pasta: est.pasta,
         uid_validity: est.uid_validity,
-        ultimo_uid: est.ultimo_uid,
+        ultimo_uid: ultimoSeguro,
         data_corte: dataCorte,
         atualizado_em: new Date().toISOString(),
       }, { onConflict: 'id' })
       if (error) erros.push(`Marca d'água de "${est.pasta}": ${error.message}`)
     }
 
-    // ── 7. Retenção ─────────────────────────────────────────────────────
-    const limpeza = await limparProcessadosAntigos()
+    // ── 7. Retenção — UMA VEZ POR DIA ───────────────────────────────────
+    // O agendador gratuito corta a conexão em 30s, então cada rodada precisa
+    // ser curta. A limpeza abre uma conexão IMAP própria e não tem urgência
+    // nenhuma: roda na primeira execução depois das 6h (UTC).
+    const agora = new Date()
+    const janelaDeLimpeza = agora.getUTCHours() === 6 && agora.getUTCMinutes() < 15
+    const limpeza = janelaDeLimpeza || body.limpar === true
+      ? await limparProcessadosAntigos()
+      : { apagados: 0, aviso: undefined as string | undefined }
     if (limpeza.aviso) avisos.push(limpeza.aviso)
 
-    // Histórico de execuções: 90 dias
-    await supabase.from('sync_execucoes').delete()
-      .lt('iniciado_em', new Date(Date.now() - 90 * 864e5).toISOString())
+    if (janelaDeLimpeza) {
+      // Histórico de execuções: 90 dias
+      await supabase.from('sync_execucoes').delete()
+        .lt('iniciado_em', new Date(Date.now() - 90 * 864e5).toISOString())
+    }
 
     // ── 8. Fecha ────────────────────────────────────────────────────────
     const duracao = Date.now() - t0
@@ -190,6 +239,9 @@ export async function POST(request: NextRequest) {
       nfes_salvas: nfesSalvas,
       duplicados,
       motivos_descarte: motivos,
+      interrompida_por_tempo: leitura.interrompida_por_tempo || interrompidaNaGravacao,
+      ms_varredura: msVarredura,
+      ms_gravacao_por_email: temposEmail.sort((a, b) => b.ms - a.ms).slice(0, 6),
       arquivados: arquivar.length,
       apagados_da_auditoria: limpeza.apagados,
       avisos,

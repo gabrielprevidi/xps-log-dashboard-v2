@@ -23,11 +23,33 @@ const IGNORADAS_PADRAO = 'Trash,Spam,Drafts,Sent,Itens Enviados,Junk,IA - XPS'
 /** Extensões que valem a pena baixar. O resto nem sai do servidor. */
 const EXTENSOES = /\.(xml|pdf|zip)$/i
 
+/**
+ * Teto de tamanho por anexo. O parsing de PDF é o gargalo da rodada: uma única
+ * mensagem com anexo grande consumia 30s dos 60s disponíveis na Vercel.
+ *
+ * Medição de 200 mensagens em 30/07/2026: mediana 38 KB, p90 341 KB, p99 2,8 MB.
+ * Dos 146 anexos, 8 passavam de 2 MB — e nenhum era NF-e (fotos de celular,
+ * relatório de contêiner de 17 MB, resumo de tributos, página de agendamento).
+ *
+ * Anexos acima do teto são registrados como ignorados, com o tamanho, para
+ * poderem ser tratados à mão. Nada some em silêncio.
+ */
+const ANEXO_MAX_KB = Number(process.env.ANEXO_MAX_KB || 3072)
+
 export interface OpcoesLeitura {
   /** Não atualiza marca d'água nem toca em nada. Usado pelo diagnóstico. */
   dryRun?: boolean
   /** Teto de mensagens examinadas na execução inteira. */
   limite?: number
+  /**
+   * Teto de TEMPO para a varredura, em ms. Mais importante que o `limite`:
+   * o custo de uma mensagem depende do tamanho do anexo, não da contagem.
+   * Medido em 30/07/2026: 10 mensagens levaram de 5,6s a 59,5s conforme o
+   * conteúdo. Sem este orçamento, uma rodada pode estourar o limite da Vercel.
+   * Ao esgotar, a varredura para e a marca d'água guarda o que foi feito —
+   * o resto entra na rodada seguinte.
+   */
+  orcamentoMs?: number
   /** Marcas d'água por pasta: { 'INBOX': 175765, ... } */
   marcas?: Record<string, { ultimo_uid: number; uid_validity: number }>
   /** Primeira passagem: busca por data em vez de UID. */
@@ -46,6 +68,8 @@ export interface ResultadoLeitura {
   estados: EstadoPasta[]
   pastas_varridas: number
   mensagens_examinadas: number
+  /** true quando a varredura parou por tempo, não por falta de mensagens. */
+  interrompida_por_tempo: boolean
   ignorados: Array<{ pasta: string; uid: number; assunto: string; motivo: string }>
 }
 
@@ -118,13 +142,15 @@ async function baixarParte(client: ImapFlow, uid: number, part: string): Promise
 }
 
 export async function lerEmailsNFeImap(opcoes: OpcoesLeitura = {}): Promise<ResultadoLeitura> {
-  const { dryRun = false, limite = 25, marcas = {}, dataCorte } = opcoes
+  const { dryRun = false, limite = 25, marcas = {}, dataCorte, orcamentoMs = 20_000 } = opcoes
+  const inicio = Date.now()
+  const semTempo = () => Date.now() - inicio > orcamentoMs
   const ignoradas = pastasIgnoradas()
   const client = criarClienteImap()
 
   const resultado: ResultadoLeitura = {
     emails: [], estados: [], pastas_varridas: 0,
-    mensagens_examinadas: 0, ignorados: [],
+    mensagens_examinadas: 0, interrompida_por_tempo: false, ignorados: [],
   }
 
   await client.connect()
@@ -137,16 +163,30 @@ export async function lerEmailsNFeImap(opcoes: OpcoesLeitura = {}): Promise<Resu
 
     for (const box of alvo) {
       if (resultado.mensagens_examinadas >= limite) break
+      if (semTempo()) { resultado.interrompida_por_tempo = true; break }
+
+      const marca = marcas[box.path]
+
+      // STATUS antes de abrir: custa ~5ms contra ~400ms do mailboxOpen. Pasta
+      // sem nada novo desde a última rodada nem chega a ser aberta — sem isto,
+      // varrer 28 pastas custava 11,4s a cada 15 minutos, mesmo sem trabalho.
+      try {
+        const st = await client.status(box.path, { uidNext: true, uidValidity: true })
+        const semNovidade = marca
+          && Number(marca.uid_validity) === Number(st.uidValidity)
+          && Number(st.uidNext) - 1 <= Number(marca.ultimo_uid)
+        if (semNovidade) continue
+      } catch {
+        continue // pasta inacessível — segue adiante
+      }
 
       let mb
       try {
         mb = await client.mailboxOpen(box.path, { readOnly: true })
       } catch {
-        continue // pasta inacessível — segue adiante
+        continue
       }
       resultado.pastas_varridas++
-
-      const marca = marcas[box.path]
       // uidValidity diferente = servidor renumerou; refaz a linha de base em vez
       // de pular mensagens silenciosamente.
       const marcaValida = marca && Number(marca.uid_validity) === Number(mb.uidValidity)
@@ -177,6 +217,9 @@ export async function lerEmailsNFeImap(opcoes: OpcoesLeitura = {}): Promise<Resu
 
       for (const uid of uids.sort((a, b) => a - b)) {
         if (resultado.mensagens_examinadas >= limite) break
+        // Orçamento de tempo: para antes de estourar o limite da Vercel. O que
+        // sobrou fica para a próxima rodada, sem perda nem retrabalho.
+        if (semTempo()) { resultado.interrompida_por_tempo = true; break }
         resultado.mensagens_examinadas++
         estado.examinadas++
         estado.ultimo_uid = Math.max(estado.ultimo_uid, uid)
@@ -195,7 +238,14 @@ export async function lerEmailsNFeImap(opcoes: OpcoesLeitura = {}): Promise<Resu
         }
 
         const anexosXML: AnexoXML[] = []
-        for (const p of partes) {
+        const grandes = partes.filter(p => p.tamanho > ANEXO_MAX_KB * 1024)
+        for (const g of grandes) {
+          resultado.ignorados.push({
+            pasta: box.path, uid, assunto,
+            motivo: `anexo grande demais para processar automaticamente: ${g.nome} (${Math.round(g.tamanho / 1024)} KB, teto ${ANEXO_MAX_KB} KB)`,
+          })
+        }
+        for (const p of partes.filter(p => p.tamanho <= ANEXO_MAX_KB * 1024)) {
           try {
             const buffer = await baixarParte(client, uid, p.part)
             await processarArquivoAnexo(p.nome, p.tipo, buffer, anexosXML)
