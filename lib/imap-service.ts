@@ -169,6 +169,12 @@ export async function lerEmailsNFeImap(opcoes: OpcoesLeitura = {}): Promise<Resu
         examinadas: 0,
       }
 
+      // Pasta sem nada no período: fixa a linha de base no estado atual, senão
+      // a busca por data se repetiria a cada rodada, para sempre.
+      if (uids.length === 0 && !marcaValida) {
+        estado.ultimo_uid = Math.max(0, Number(mb.uidNext) - 1)
+      }
+
       for (const uid of uids.sort((a, b) => a - b)) {
         if (resultado.mensagens_examinadas >= limite) break
         resultado.mensagens_examinadas++
@@ -239,4 +245,74 @@ export async function lerEmailsNFeImap(opcoes: OpcoesLeitura = {}): Promise<Resu
 
   if (dryRun) resultado.estados = [] // nada a persistir
   return resultado
+}
+
+/**
+ * Copia para `IA - XPS/Processados` os emails que geraram movimentação.
+ *
+ * É PURA AUDITORIA: nada no funcionamento depende desta pasta. Por isso toda
+ * falha aqui é registrada como aviso e nunca derruba a sincronização — os dados
+ * já estão no banco quando esta função é chamada.
+ *
+ * A origem é aberta em readOnly. COPY não altera a pasta de origem (escreve só
+ * no destino), mas há servidores que recusam COPY a partir de uma seleção
+ * readOnly — daí o tratamento tolerante.
+ */
+export async function arquivarProcessados(
+  itens: Array<{ pasta: string; uid: number }>,
+): Promise<{ copiados: number; avisos: string[] }> {
+  const destino = process.env.IMAP_PASTA_PROCESSADOS || 'IA - XPS/Processados'
+  const avisos: string[] = []
+  let copiados = 0
+  if (itens.length === 0) return { copiados, avisos }
+
+  const porPasta = new Map<string, number[]>()
+  for (const i of itens) {
+    if (i.pasta === destino) continue // já está lá
+    porPasta.set(i.pasta, [...(porPasta.get(i.pasta) ?? []), i.uid])
+  }
+
+  const client = criarClienteImap()
+  await client.connect()
+  try {
+    for (const [pasta, uids] of porPasta) {
+      try {
+        await client.mailboxOpen(pasta, { readOnly: true })
+        await client.messageCopy(uids.join(','), destino, { uid: true })
+        copiados += uids.length
+        await client.mailboxClose()
+      } catch (err) {
+        avisos.push(`Não foi possível arquivar ${uids.length} de "${pasta}": ${String(err)}`)
+      }
+    }
+  } finally {
+    try { await client.logout() } catch { /* já caiu */ }
+  }
+  return { copiados, avisos }
+}
+
+/**
+ * Apaga de `IA - XPS/Processados` o que passou da retenção (padrão 30 dias).
+ * Única pasta em que a rotina escreve — e é uma pasta criada só para ela.
+ */
+export async function limparProcessadosAntigos(
+  dias = Number(process.env.RETENCAO_PROCESSADOS_DIAS || 30),
+): Promise<{ apagados: number; aviso?: string }> {
+  const destino = process.env.IMAP_PASTA_PROCESSADOS || 'IA - XPS/Processados'
+  const limite = new Date()
+  limite.setDate(limite.getDate() - dias)
+
+  const client = criarClienteImap()
+  await client.connect()
+  try {
+    await client.mailboxOpen(destino) // read-write: é a nossa pasta
+    const antigos = await client.search({ before: limite }, { uid: true }) || []
+    if (antigos.length === 0) return { apagados: 0 }
+    await client.messageDelete(antigos.join(','), { uid: true })
+    return { apagados: antigos.length }
+  } catch (err) {
+    return { apagados: 0, aviso: `Falha na limpeza de "${destino}": ${String(err)}` }
+  } finally {
+    try { await client.logout() } catch { /* já caiu */ }
+  }
 }
