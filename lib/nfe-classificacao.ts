@@ -46,6 +46,71 @@ export function tipoOperacaoPorNatureza(natureza: string): 'entrada' | 'saida' {
 }
 
 /**
+ * ─────────────────────────────────────────────────────────────────────────
+ * V2 — Naturezas que NÃO movimentam o estoque do armazém.
+ *
+ * A regra da V1 (`tipoOperacaoPorNatureza`) nunca descarta: tudo que não é
+ * entrada vira saída. Levantamento das 2208 notas já processadas mostrou o
+ * efeito disso nos clientes em modo padrão:
+ *
+ *   COMPRA DO EXTERIOR PARA INDUSTRIALIZACAO   1x → virou saída (errado)
+ *   "INSCRIÇÃO ESTADUALINSC. ESTADUAL DO..."   3x → virou saída (rótulo do
+ *                                                   DANFE capturado por engano)
+ *   (sem natureza)                             2x → virou saída (sem base)
+ *
+ * Esta lista é a mesma que a Fedrigoni já usava, estendida aos demais modos.
+ * Alterar aqui muda o comportamento de todos os clientes na V2.
+ * ─────────────────────────────────────────────────────────────────────────
+ */
+const PADROES_NAO_CONTABILIZA = [
+  'compra',                 // COMPRA PARA COMERCIALIZACAO, COMPRA DO EXTERIOR…
+  'outra entrada',
+  'retorno simbolico',
+  'transferencia',
+  'conta e ordem',
+  'remessa ind',            // remessa para industrialização
+  'devol',                  // devolução de compra
+]
+
+/**
+ * Classificação da operação para a V2, respeitando o modo do cliente.
+ * Retorna `null` quando a nota é informativa e não deve gerar movimentação.
+ *
+ * Usada apenas pelo pipeline da V2. A V1 continua com
+ * `tipoOperacaoPorNatureza`, que nunca descarta.
+ */
+export function classificarOperacaoV2(
+  natureza: string,
+  modo: string,
+  codigoOperacaoDanfe?: number | null,
+): { tipo: 'entrada' | 'saida' | null; motivo?: string } {
+  if (modo === 'fedrigoni') {
+    const t = classificarOperacaoFedrigoni(natureza, codigoOperacaoDanfe)
+    return t ? { tipo: t } : { tipo: null, motivo: `natureza informativa: "${natureza || 'vazia'}"` }
+  }
+
+  const n = normalizarNatureza(natureza).trim()
+
+  // Natureza vazia: nada foi lido do documento. Virar saída seria chute —
+  // e chute em baixa de estoque vira erro de faturamento.
+  if (!n) return { tipo: null, motivo: 'natureza não identificada no documento' }
+
+  // Rótulo do DANFE capturado por engano pelo parser (ex.: "INSCRIÇÃO
+  // ESTADUALINSC. ESTADUAL DO SUBST. TRIBUTÁRIOCNPJ"). Não é natureza.
+  if (/inscricao estadual|subst\.? tributario/.test(n)) {
+    return { tipo: null, motivo: `natureza irreconhecível (rótulo do DANFE): "${natureza}"` }
+  }
+
+  for (const p of PADROES_NAO_CONTABILIZA) {
+    if (n.includes(p)) {
+      return { tipo: null, motivo: `natureza informativa ("${p}"): "${natureza}"` }
+    }
+  }
+
+  return { tipo: tipoOperacaoPorNatureza(natureza) }
+}
+
+/**
  * Classificação específica da Fedrigoni.
  * Retorna null para documentos informativos que não movimentam o estoque.
  */
