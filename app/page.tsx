@@ -10,6 +10,7 @@ import {
   Plus, ChevronRight, Loader2, Mail, Sparkles, AlertCircle,
 } from 'lucide-react'
 import { formatarMoeda } from '@/lib/calculations'
+import SyncStatus from '@/components/dashboard/SyncStatus'
 
 // ─── types ───────────────────────────────────────────────────────────────────
 
@@ -97,8 +98,11 @@ export default function HomePage() {
   const [loadingInsights, setLoadingInsights] = useState(false)
   const [erroInsights, setErroInsights] = useState<string | null>(null)
 
-  const carregar = useCallback(async () => {
-    setLoading(true)
+  // `silencioso` evita o spinner de tela cheia: o recarregamento disparado pela
+  // sincronização automática não pode fazer a página piscar enquanto a pessoa
+  // está lendo.
+  const carregar = useCallback(async (silencioso = false) => {
+    if (!silencioso) setLoading(true)
     try {
       const [cls, dash, anal] = await Promise.all([
         fetch('/api/clientes').then(r => r.json()),
@@ -114,6 +118,8 @@ export default function HomePage() {
   }, [])
 
   useEffect(() => { carregar() }, [carregar])
+
+  const recarregarSilencioso = useCallback(() => { carregar(true) }, [carregar])
 
   // ── KPIs consolidados ──
   const totalEntradas = clientes.reduce((s, c) => s + c.totalEntradas, 0)
@@ -183,6 +189,9 @@ export default function HomePage() {
   // ── render ──
   return (
     <main className="max-w-[1400px] mx-auto px-6 py-8 flex flex-col gap-6">
+
+      {/* Sincronização automática — substitui o botão "Sincronizar" da V1 */}
+      <SyncStatus onNovasNotas={recarregarSilencioso} />
 
       {/* KPIs */}
       <div className="bg-white rounded-2xl border border-gray-100 p-6">

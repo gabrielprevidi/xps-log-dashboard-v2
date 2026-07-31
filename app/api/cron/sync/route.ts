@@ -23,6 +23,7 @@ import {
 } from '@/lib/imap-service'
 import { processarEmailV2, limparCacheClientes } from '@/lib/ingestao-v2'
 import { getServerClient } from '@/lib/supabase'
+import { getSessaoAdmin } from '@/lib/admin-auth'
 
 export const dynamic = 'force-dynamic'
 export const maxDuration = 60
@@ -265,8 +266,19 @@ export async function POST(request: NextRequest) {
   }
 }
 
-/** Situação da última rodada — usado pelo dashboard para se atualizar. */
-export async function GET() {
+/**
+ * Situação das últimas rodadas — usado pelo dashboard para se atualizar.
+ *
+ * Exige sessão de admin (o navegador manda o cookie) ou o token do agendador.
+ * Sem isso, qualquer um leria a operação da empresa: volume de notas, horários,
+ * motivos de descarte.
+ */
+export async function GET(request: NextRequest) {
+  const comToken = autorizado(request)
+  if (!comToken && !(await getSessaoAdmin())) {
+    return NextResponse.json({ error: 'Não autorizado' }, { status: 401 })
+  }
+
   const supabase = getServerClient()
   const { data } = await supabase
     .from('sync_execucoes')

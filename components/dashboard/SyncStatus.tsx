@@ -1,0 +1,194 @@
+'use client'
+
+/**
+ * Status da sincronização automática da V2.
+ *
+ * Substitui o botão "Sincronizar" da V1: em vez de o operador disparar e
+ * esperar, a rotina roda de 15 em 15 minutos e esta faixa mostra o que
+ * aconteceu. Quando entram notas novas, chama `onNovasNotas()` — que é o mesmo
+ * recarregamento que o clique fazia antes.
+ *
+ * Por que polling e não Supabase Realtime: as tabelas `sync_execucoes` e
+ * `movimentacoes` estão com RLS, e o Realtime respeita RLS. O navegador usa a
+ * chave anônima e não receberia evento nenhum. Liberar a leitura para o papel
+ * anônimo exporia a operação da empresa. O polling passa pela rota de API, que
+ * roda no servidor com a chave de serviço e exige sessão de admin.
+ */
+
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { RefreshCw, CheckCircle2, AlertTriangle, Clock, Inbox } from 'lucide-react'
+
+const INTERVALO_MS = 30_000
+
+interface Execucao {
+  iniciado_em: string
+  finalizado_em: string | null
+  status: 'rodando' | 'ok' | 'erro'
+  emails_lidos: number
+  emails_aceitos: number
+  emails_descartados: number
+  nfes_salvas: number
+  duracao_ms: number | null
+}
+
+function haQuantoTempo(iso: string): string {
+  const seg = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 1000))
+  if (seg < 60) return 'agora há pouco'
+  const min = Math.floor(seg / 60)
+  if (min < 60) return `há ${min} min`
+  const h = Math.floor(min / 60)
+  if (h < 24) return `há ${h}h${min % 60 ? ` ${min % 60}min` : ''}`
+  return `há ${Math.floor(h / 24)} dia(s)`
+}
+
+export default function SyncStatus({ onNovasNotas }: { onNovasNotas?: () => void }) {
+  const [execucoes, setExecucoes] = useState<Execucao[] | null>(null)
+  const [erroRede, setErroRede] = useState(false)
+  const [expandido, setExpandido] = useState(false)
+  // Total de notas já visto — a comparação detecta o que entrou desde a última
+  // consulta. Ref (não estado) para não reexecutar o efeito a cada mudança.
+  const totalNotasRef = useRef<number | null>(null)
+
+  const consultar = useCallback(async () => {
+    try {
+      const res = await fetch('/api/cron/sync', { cache: 'no-store' })
+      if (!res.ok) { setErroRede(true); return }
+      const dados = await res.json()
+      const lista: Execucao[] = dados.execucoes ?? []
+      setExecucoes(lista)
+      setErroRede(false)
+
+      const total = lista.reduce((s, e) => s + (e.nfes_salvas ?? 0), 0)
+      if (totalNotasRef.current !== null && total > totalNotasRef.current) {
+        onNovasNotas?.()
+      }
+      totalNotasRef.current = total
+    } catch {
+      setErroRede(true)
+    }
+  }, [onNovasNotas])
+
+  useEffect(() => {
+    consultar()
+    const t = setInterval(consultar, INTERVALO_MS)
+    // Consulta ao voltar para a aba: quem ficou horas fora vê o estado atual
+    // sem esperar o próximo ciclo.
+    const aoVoltar = () => { if (document.visibilityState === 'visible') consultar() }
+    document.addEventListener('visibilitychange', aoVoltar)
+    return () => { clearInterval(t); document.removeEventListener('visibilitychange', aoVoltar) }
+  }, [consultar])
+
+  const ultima = execucoes?.[0]
+  const rodando = ultima?.status === 'rodando'
+  const notas24h = (execucoes ?? [])
+    .filter(e => Date.now() - new Date(e.iniciado_em).getTime() < 864e5)
+    .reduce((s, e) => s + (e.nfes_salvas ?? 0), 0)
+
+  return (
+    <div className="bg-white rounded-2xl border border-gray-100 p-5">
+      <div className="flex items-center justify-between gap-4 flex-wrap">
+        <div className="flex items-center gap-3 min-w-0">
+          <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${
+            erroRede ? 'bg-amber-500' : rodando ? 'bg-blue-600' : 'bg-[#0d1b2e]'}`}>
+            {rodando
+              ? <RefreshCw className="w-5 h-5 text-white animate-spin" />
+              : erroRede
+                ? <AlertTriangle className="w-5 h-5 text-white" />
+                : <CheckCircle2 className="w-5 h-5 text-white" />}
+          </div>
+          <div className="min-w-0">
+            <h2 className="font-semibold text-[#0d1b2e] flex items-center gap-2">
+              Sincronização automática
+              <span className="text-[10px] font-medium uppercase tracking-wide px-1.5 py-0.5 rounded bg-gray-100 text-gray-500">
+                a cada 15 min
+              </span>
+            </h2>
+            <p className="text-xs text-gray-400 truncate">
+              armazenagem@xpslog.com.br · IMAP
+              {ultima && <> · última verificação {haQuantoTempo(ultima.iniciado_em)}</>}
+            </p>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-5">
+          <div className="text-right">
+            <div className="text-lg font-semibold text-[#0d1b2e] leading-none">{notas24h}</div>
+            <div className="text-[11px] text-gray-400 mt-1">notas em 24h</div>
+          </div>
+          {execucoes && execucoes.length > 0 && (
+            <button
+              onClick={() => setExpandido(v => !v)}
+              className="text-xs text-gray-500 hover:text-[#0d1b2e] underline underline-offset-2"
+            >
+              {expandido ? 'ocultar' : 'histórico'}
+            </button>
+          )}
+        </div>
+      </div>
+
+      {erroRede && (
+        <p className="mt-3 text-xs text-amber-600 flex items-center gap-1.5">
+          <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+          Não foi possível consultar o status. A rotina continua rodando no servidor —
+          isto afeta apenas esta tela.
+        </p>
+      )}
+
+      {ultima?.status === 'erro' && (
+        <p className="mt-3 text-xs text-red-600 flex items-center gap-1.5">
+          <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+          A última rodada terminou com erro. Verifique o histórico.
+        </p>
+      )}
+
+      {execucoes !== null && execucoes.length === 0 && (
+        <p className="mt-3 text-xs text-gray-400 flex items-center gap-1.5">
+          <Clock className="w-3.5 h-3.5 shrink-0" />
+          Nenhuma execução registrada ainda. A primeira acontece em até 15 minutos.
+        </p>
+      )}
+
+      {expandido && execucoes && (
+        <div className="mt-4 border-t border-gray-100 pt-3">
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="text-gray-400 text-left">
+                <th className="font-medium pb-2">Quando</th>
+                <th className="font-medium pb-2 text-right">Lidos</th>
+                <th className="font-medium pb-2 text-right">Aceitos</th>
+                <th className="font-medium pb-2 text-right">Notas</th>
+                <th className="font-medium pb-2 text-right">Tempo</th>
+              </tr>
+            </thead>
+            <tbody>
+              {execucoes.map((e, i) => (
+                <tr key={i} className="border-t border-gray-50 text-gray-600">
+                  <td className="py-1.5">
+                    {new Date(e.iniciado_em).toLocaleString('pt-BR', {
+                      day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit',
+                    })}
+                    {e.status === 'erro' && <span className="ml-1.5 text-red-500">erro</span>}
+                  </td>
+                  <td className="py-1.5 text-right tabular-nums">{e.emails_lidos}</td>
+                  <td className="py-1.5 text-right tabular-nums">{e.emails_aceitos}</td>
+                  <td className={`py-1.5 text-right tabular-nums ${e.nfes_salvas > 0 ? 'font-semibold text-[#0d1b2e]' : ''}`}>
+                    {e.nfes_salvas}
+                  </td>
+                  <td className="py-1.5 text-right tabular-nums text-gray-400">
+                    {e.duracao_ms ? `${(e.duracao_ms / 1000).toFixed(1)}s` : '—'}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <p className="mt-3 text-[11px] text-gray-400 flex items-start gap-1.5">
+            <Inbox className="w-3.5 h-3.5 shrink-0 mt-px" />
+            &quot;Lidos&quot; conta todo email examinado; &quot;aceitos&quot; são os que tinham NF-e de
+            cliente cadastrado, com operação de entrada ou saída. O restante é
+            descartado sem gravar nada no banco.
+          </p>
+        </div>
+      )}
+    </div>
+  )
+}
