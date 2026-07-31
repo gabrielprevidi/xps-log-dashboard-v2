@@ -30,6 +30,33 @@ export interface MotivoDescarte {
   categoria: string
 }
 
+/** Decisão detalhada por anexo — usada pelo diagnóstico. */
+export interface DecisaoAnexo {
+  arquivo: string
+  numero_nfe: string | null
+  natureza: string | null
+  emitente: string | null
+  cliente: string | null
+  modo: string | null
+  tipo: 'entrada' | 'saida' | null
+  peso_ton: number | null
+  volumes: number | null
+  pallets: number | null
+  decisao: 'GRAVA' | 'DESCARTA'
+  motivo?: string
+  categoria?: string
+}
+
+export interface OpcoesPrefiltro {
+  /**
+   * Ignora a deduplicação. Só para diagnóstico: enquanto a V1 estiver ativa,
+   * ela processa as mesmas notas primeiro e a V2 as descarta como duplicadas —
+   * o que impede validar a classificação dos clientes cujo caminho a V1 vence.
+   * NUNCA usar na rotina real: geraria movimentação duplicada.
+   */
+  ignorarDedup?: boolean
+}
+
 export interface ResultadoEmail {
   aceito: boolean
   anexos_aceitos: number
@@ -60,24 +87,39 @@ export function limparCacheClientes() { cacheClientes = null }
  */
 export async function prefiltrar(
   email: EmailProcessado,
-): Promise<{ aceitos: AnexoXML[]; descartes: MotivoDescarte[]; duplicados: number }> {
+  opcoes: OpcoesPrefiltro = {},
+): Promise<{ aceitos: AnexoXML[]; descartes: MotivoDescarte[]; duplicados: number; decisoes: DecisaoAnexo[] }> {
   const aceitos: AnexoXML[] = []
   const descartes: MotivoDescarte[] = []
+  const decisoes: DecisaoAnexo[] = []
   let duplicados = 0
   const clientes = await clientesPorId()
 
   for (const anexo of email.anexos_xml) {
     const nfe = anexo.dados_nfe
+    const base = {
+      arquivo: anexo.nome_arquivo,
+      numero_nfe: nfe?.numero_nfe ?? null,
+      natureza: nfe?.natureza_operacao ?? null,
+      emitente: nfe?.nome_emitente ?? null,
+      peso_ton: nfe?.peso_liquido_total ? +(nfe.peso_liquido_total / 1000).toFixed(4) : null,
+      volumes: nfe?.quantidade_especie ?? null,
+      pallets: anexo.pallets_calculados,
+    }
+    const registrar = (d: Partial<DecisaoAnexo> & Pick<DecisaoAnexo, 'decisao'>) =>
+      decisoes.push({ ...base, cliente: null, modo: null, tipo: null, ...d })
 
     // 1. Deduplicação — mesma checagem que a persistência faria
-    if (await arquivoJaProcessado(anexo.hash)) {
+    if (!opcoes.ignorarDedup && await arquivoJaProcessado(anexo.hash)) {
       duplicados++
       descartes.push({ arquivo: anexo.nome_arquivo, motivo: 'arquivo já processado', categoria: 'duplicado' })
+      registrar({ decisao: 'DESCARTA', motivo: 'arquivo já processado', categoria: 'duplicado' })
       continue
     }
-    if (nfe?.chave_nfe && await nfeJaImportada(nfe.chave_nfe)) {
+    if (!opcoes.ignorarDedup && nfe?.chave_nfe && await nfeJaImportada(nfe.chave_nfe)) {
       duplicados++
       descartes.push({ arquivo: anexo.nome_arquivo, motivo: `NF-e ${nfe.numero_nfe ?? ''} já importada`, categoria: 'duplicado' })
+      registrar({ decisao: 'DESCARTA', motivo: 'NF-e já importada', categoria: 'duplicado' })
       continue
     }
 
@@ -93,16 +135,19 @@ export async function prefiltrar(
     )
     if (!clienteId) {
       descartes.push({ arquivo: anexo.nome_arquivo, motivo: 'cliente não identificado', categoria: 'sem_cliente' })
+      registrar({ decisao: 'DESCARTA', motivo: 'cliente não identificado', categoria: 'sem_cliente' })
       continue
     }
 
     const cliente = clientes.get(clienteId)
     const modo = cliente?.modo_calculo ?? 'padrao'
+    const nomeCliente = (cliente?.nome_fantasia || cliente?.nome) ?? null
 
     // 3. Fedrigoni só conta PDF — o XML nem chega a ser inserido, então não
     //    "reserva" a chave de acesso (bug que a V1 contorna deletando depois).
     if (modo === 'fedrigoni' && anexo.nome_arquivo.toLowerCase().endsWith('.xml')) {
       descartes.push({ arquivo: anexo.nome_arquivo, motivo: 'Fedrigoni usa apenas PDF', categoria: 'fedrigoni_xml' })
+      registrar({ decisao: 'DESCARTA', cliente: nomeCliente, modo, motivo: 'Fedrigoni usa apenas PDF', categoria: 'fedrigoni_xml' })
       continue
     }
 
@@ -112,13 +157,15 @@ export async function prefiltrar(
     )
     if (!tipo) {
       descartes.push({ arquivo: anexo.nome_arquivo, motivo: motivo ?? 'operação não contabilizada', categoria: 'operacao_informativa' })
+      registrar({ decisao: 'DESCARTA', cliente: nomeCliente, modo, motivo: motivo ?? 'operação não contabilizada', categoria: 'operacao_informativa' })
       continue
     }
 
+    registrar({ decisao: 'GRAVA', cliente: nomeCliente, modo, tipo })
     aceitos.push(anexo)
   }
 
-  return { aceitos, descartes, duplicados }
+  return { aceitos, descartes, duplicados, decisoes }
 }
 
 /**

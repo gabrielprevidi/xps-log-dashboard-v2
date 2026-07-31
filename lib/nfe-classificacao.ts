@@ -107,6 +107,24 @@ export function classificarOperacaoV2(
     }
   }
 
+  // ─────────────────────────────────────────────────────────────────────
+  // RETORNO é SAÍDA — precisa vir antes da regra genérica.
+  //
+  // "Retorno de mercadoria depositada em depósito fechado ou armazém geral"
+  // é a mercadoria voltando do armazém para o cliente: sai do estoque.
+  // Mas a frase contém "depósito fechado", que `tipoOperacaoPorNatureza`
+  // reconhece como padrão de ENTRADA — e classificaria ao contrário,
+  // aumentando o estoque em vez de baixá-lo.
+  //
+  // Que saída é o correto está comprovado pelo histórico: Fedrigoni e Tecnia,
+  // que têm classificação escrita à mão, registraram 93 e 162 movimentações
+  // com esta natureza, todas como saída, nenhuma como entrada. Só a Avery —
+  // que cai na regra genérica — tem 1 entrada, justamente por causa deste erro.
+  // ─────────────────────────────────────────────────────────────────────
+  if (n.includes('retorno')) {
+    return { tipo: 'saida' }
+  }
+
   return { tipo: tipoOperacaoPorNatureza(natureza) }
 }
 
