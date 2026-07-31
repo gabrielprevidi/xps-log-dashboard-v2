@@ -145,6 +145,10 @@ export async function lerEmailsNFeImap(opcoes: OpcoesLeitura = {}): Promise<Resu
   const { dryRun = false, limite = 25, marcas = {}, dataCorte, orcamentoMs = 20_000 } = opcoes
   const inicio = Date.now()
   const semTempo = () => Date.now() - inicio > orcamentoMs
+  // Uma mensagem só pode ser abandonada no meio se outra já tiver sido
+  // concluída nesta rodada. Sem isso, um email pesado o bastante para estourar
+  // o orçamento sozinho seria abandonado para sempre, travando a fila.
+  let concluidasNestaRodada = 0
   const ignoradas = pastasIgnoradas()
   const client = criarClienteImap()
 
@@ -222,7 +226,6 @@ export async function lerEmailsNFeImap(opcoes: OpcoesLeitura = {}): Promise<Resu
         if (semTempo()) { resultado.interrompida_por_tempo = true; break }
         resultado.mensagens_examinadas++
         estado.examinadas++
-        estado.ultimo_uid = Math.max(estado.ultimo_uid, uid)
 
         let msg: FetchMessageObject | undefined
         for await (const m of client.fetch(String(uid), { uid: true, envelope: true, bodyStructure: true }, { uid: true })) {
@@ -238,6 +241,7 @@ export async function lerEmailsNFeImap(opcoes: OpcoesLeitura = {}): Promise<Resu
         }
 
         const anexosXML: AnexoXML[] = []
+        let abortadaNoMeio = false
         const grandes = partes.filter(p => p.tamanho > ANEXO_MAX_KB * 1024)
         for (const g of grandes) {
           resultado.ignorados.push({
@@ -246,6 +250,16 @@ export async function lerEmailsNFeImap(opcoes: OpcoesLeitura = {}): Promise<Resu
           })
         }
         for (const p of partes.filter(p => p.tamanho <= ANEXO_MAX_KB * 1024)) {
+          // Email com muitos anexos (observado: 16 numa mensagem só, 36s de
+          // processamento) estourava o orçamento porque a verificação só
+          // acontecia entre mensagens. Aqui ele pode ser abandonado no meio —
+          // a marca d'água não avança sobre ele e a próxima rodada refaz a
+          // mensagem inteira; os anexos já gravados caem na deduplicação.
+          if (semTempo() && concluidasNestaRodada > 0) {
+            abortadaNoMeio = true
+            resultado.interrompida_por_tempo = true
+            break
+          }
           try {
             const buffer = await baixarParte(client, uid, p.part)
             await processarArquivoAnexo(p.nome, p.tipo, buffer, anexosXML)
@@ -254,11 +268,15 @@ export async function lerEmailsNFeImap(opcoes: OpcoesLeitura = {}): Promise<Resu
           }
         }
 
+        if (abortadaNoMeio) continue   // sem avançar a marca d'água
+
         if (anexosXML.length === 0) {
           resultado.ignorados.push({
             pasta: box.path, uid, assunto,
             motivo: `anexos não reconhecidos como NF-e: ${partes.map(p => p.nome).join(', ')}`,
           })
+          estado.ultimo_uid = Math.max(estado.ultimo_uid, uid)
+          concluidasNestaRodada++
           continue
         }
 
@@ -284,6 +302,8 @@ export async function lerEmailsNFeImap(opcoes: OpcoesLeitura = {}): Promise<Resu
           pasta: box.path,
           uid,
         })
+        estado.ultimo_uid = Math.max(estado.ultimo_uid, uid)
+        concluidasNestaRodada++
       }
 
       if (estado.examinadas > 0 || !marcaValida) resultado.estados.push(estado)
