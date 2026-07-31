@@ -39,6 +39,24 @@ const CASOS: Array<{ natureza: string; modo: string; esperado: Esperado; porque:
   { natureza: 'VENDA DE PRODUCAO DO ESTABELECIMENTO', modo: 'padrao', esperado: 'saida', porque: 'venda comum' },
   { natureza: 'REMESSA DE AMOSTRA GRATIS', modo: 'padrao', esperado: 'saida', porque: 'amostra saindo do armazém' },
 
+  // ── Tecnia: regra própria (remessa=entrada, retorno=saída, resto não conta) ──
+  {
+    natureza: 'REMESSA PARA DEPOSITO FECHADO OU ARMAZEM GERAL', modo: 'tecnia', esperado: 'entrada',
+    porque: 'V1 gravou 28 movimentações assim',
+  },
+  {
+    natureza: 'Retorno de mercadoria depositada em depósito fechado ou arm', modo: 'tecnia', esperado: 'saida',
+    porque: 'V1 gravou 355 movimentações assim',
+  },
+  {
+    natureza: 'VENDA DE MERCADORIA ADQUIRIDA OU RECEBIDA DE TERCEIROS', modo: 'tecnia', esperado: null,
+    porque: 'venda não é remessa nem retorno; a pré-filtragem aprovava e a persistência recusava',
+  },
+  {
+    natureza: 'Venda', modo: 'tecnia', esperado: null,
+    porque: 'mesma regra — para a Tecnia, venda não movimenta o armazém',
+  },
+
   // ── Não contabilizam ───────────────────────────────────────────────────
   { natureza: 'COMPRA PARA COMERCIALIZACAO', modo: 'padrao', esperado: null, porque: 'compra não movimenta o armazém' },
   { natureza: 'COMPRA DO EXTERIOR PARA INDUSTRIALIZACAO', modo: 'padrao', esperado: null, porque: 'virava saída indevida antes' },

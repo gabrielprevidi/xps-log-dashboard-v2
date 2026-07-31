@@ -84,12 +84,34 @@ export function classificarOperacaoV2(
   modo: string,
   codigoOperacaoDanfe?: number | null,
 ): { tipo: 'entrada' | 'saida' | null; motivo?: string } {
+  const n = normalizarNatureza(natureza).trim()
+
   if (modo === 'fedrigoni') {
     const t = classificarOperacaoFedrigoni(natureza, codigoOperacaoDanfe)
     return t ? { tipo: t } : { tipo: null, motivo: `natureza informativa: "${natureza || 'vazia'}"` }
   }
 
-  const n = normalizarNatureza(natureza).trim()
+  // ─────────────────────────────────────────────────────────────────────
+  // TECNIA — regra própria, mais restritiva que a genérica:
+  //   entrada = natureza contém "remessa"
+  //   saída   = natureza contém "retorno"
+  //   qualquer outra coisa (inclusive venda) não movimenta o armazém
+  //
+  // Estava implementada só dentro da persistência. A pré-filtragem da V2 não
+  // a conhecia e aprovava vendas da Tecnia, que a persistência depois recusava
+  // — gravando email e arquivo no banco sem gerar movimentação, justamente o
+  // que a V2 existe para evitar.
+  // ─────────────────────────────────────────────────────────────────────
+  if (modo === 'tecnia') {
+    const ehRemessa = n.includes('remessa')
+    const ehRetorno = n.includes('retorno')
+    if (ehRemessa && !ehRetorno) return { tipo: 'entrada' }
+    if (ehRetorno && !ehRemessa) return { tipo: 'saida' }
+    return {
+      tipo: null,
+      motivo: `Tecnia: natureza não é remessa nem retorno: "${natureza || 'vazia'}"`,
+    }
+  }
 
   // Natureza vazia: nada foi lido do documento. Virar saída seria chute —
   // e chute em baixa de estoque vira erro de faturamento.

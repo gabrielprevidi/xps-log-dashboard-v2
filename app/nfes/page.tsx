@@ -3,7 +3,7 @@
 import { Mail, CheckCircle, XCircle, Clock, ArrowLeftRight, UserPlus, Trash2 } from 'lucide-react'
 import StatusBadge from '@/components/dashboard/StatusBadge'
 import KPICard from '@/components/dashboard/KPICard'
-import EmailSyncPanel from '@/components/dashboard/EmailSyncPanel'
+import SyncStatus from '@/components/dashboard/SyncStatus'
 import { useEffect, useState } from 'react'
 
 interface EmailImportado {
@@ -248,9 +248,9 @@ export default function NFesPage() {
         <KPICard label="Com Erro" value={String(contagem.erro)} subvalue="falhou" icon={XCircle} variant={contagem.erro > 0 ? 'highlight' : 'default'} />
       </div>
 
-      {/* Painel de sincronização */}
+      {/* Status da sincronização automática (substitui o painel do Graph da V1) */}
       <div className="mb-6">
-        <EmailSyncPanel onSyncComplete={carregarDados} />
+        <SyncStatus onNovasNotas={carregarDados} />
       </div>
 
       {erro && (

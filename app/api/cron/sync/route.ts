@@ -100,7 +100,6 @@ export async function POST(request: NextRequest) {
       dryRun, limite, marcas, dataCorte, orcamentoMs: Math.round(orcamentoTotal * 0.45),
     })
     const msVarredura = Date.now() - tScan
-    const temposEmail: Array<{ uid?: number; anexos: number; ms: number }> = []
 
     // ── 4. Decisão e gravação ───────────────────────────────────────────
     // Emails ainda não gravados quando o tempo acaba: a marca d'água da pasta
@@ -135,9 +134,7 @@ export async function POST(request: NextRequest) {
         continue
       }
 
-      const tEmail = Date.now()
       const r = await processarEmailV2(email)
-      temposEmail.push({ uid: email.uid, anexos: email.anexos_xml.length, ms: Date.now() - tEmail })
       if (r.aceito) {
         emailsAceitos++
         nfesSalvas += r.movimentacoes_salvas
@@ -242,7 +239,6 @@ export async function POST(request: NextRequest) {
       motivos_descarte: motivos,
       interrompida_por_tempo: leitura.interrompida_por_tempo || interrompidaNaGravacao,
       ms_varredura: msVarredura,
-      ms_gravacao_por_email: temposEmail.sort((a, b) => b.ms - a.ms).slice(0, 6),
       arquivados: arquivar.length,
       apagados_da_auditoria: limpeza.apagados,
       avisos,

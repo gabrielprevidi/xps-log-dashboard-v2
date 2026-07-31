@@ -143,11 +143,14 @@ export async function prefiltrar(
     const modo = cliente?.modo_calculo ?? 'padrao'
     const nomeCliente = (cliente?.nome_fantasia || cliente?.nome) ?? null
 
-    // 3. Fedrigoni só conta PDF — o XML nem chega a ser inserido, então não
-    //    "reserva" a chave de acesso (bug que a V1 contorna deletando depois).
-    if (modo === 'fedrigoni' && anexo.nome_arquivo.toLowerCase().endsWith('.xml')) {
-      descartes.push({ arquivo: anexo.nome_arquivo, motivo: 'Fedrigoni usa apenas PDF', categoria: 'fedrigoni_xml' })
-      registrar({ decisao: 'DESCARTA', cliente: nomeCliente, modo, motivo: 'Fedrigoni usa apenas PDF', categoria: 'fedrigoni_xml' })
+    // 3. Fedrigoni e Tecnia contam apenas PDF: o volume vem do campo
+    //    QUANTIDADE/ESPÉCIE do DANFE, que não existe no XML. Descartando aqui,
+    //    o XML nem chega a ser inserido — e portanto não "reserva" a chave de
+    //    acesso, bug que a V1 contorna deletando a linha depois de gravá-la.
+    if ((modo === 'fedrigoni' || modo === 'tecnia') && anexo.nome_arquivo.toLowerCase().endsWith('.xml')) {
+      const m = `${modo === 'tecnia' ? 'Tecnia' : 'Fedrigoni'} usa apenas PDF`
+      descartes.push({ arquivo: anexo.nome_arquivo, motivo: m, categoria: 'xml_ignorado' })
+      registrar({ decisao: 'DESCARTA', cliente: nomeCliente, modo, motivo: m, categoria: 'xml_ignorado' })
       continue
     }
 

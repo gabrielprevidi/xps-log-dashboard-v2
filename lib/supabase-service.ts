@@ -4,9 +4,9 @@
  */
 
 import { createClient } from '@supabase/supabase-js'
-import type { EmailProcessado, AnexoXML } from './email-service'
+import type { EmailProcessado, AnexoXML } from './anexos'
 import type { ItemNFe } from './nfe-parser'
-import { classificarOperacaoFedrigoni, tipoOperacaoPorNatureza } from './nfe-classificacao'
+import { classificarOperacaoFedrigoni, classificarOperacaoV2 } from './nfe-classificacao'
 import { calcularPallets } from './calculations'
 
 // Cliente servidor — usa service_role se disponível, anon caso contrário
@@ -876,23 +876,12 @@ async function persistirAnexo(
       return
     }
 
-    const naturezaNormTecnia = (nfe?.natureza_operacao ?? '')
-      .toLowerCase()
-      .normalize('NFD')
-      .replace(/[̀-ͯ]/g, '')
-
-    const ehEntradaTecnia = naturezaNormTecnia.includes('remessa')
-    const ehSaidaTecnia = naturezaNormTecnia.includes('retorno')
-
-    let tipoOpTecnia: 'entrada' | 'saida' | null = null
-    if (ehEntradaTecnia && !ehSaidaTecnia) tipoOpTecnia = 'entrada'
-    else if (ehSaidaTecnia && !ehEntradaTecnia) tipoOpTecnia = 'saida'
-
+    // Regra da Tecnia (remessa = entrada, retorno = saída) agora mora no
+    // classificador único, para a pré-filtragem enxergar a mesma coisa.
+    const { tipo: tipoOpTecnia, motivo: motivoTecnia } =
+      classificarOperacaoV2(nfe?.natureza_operacao ?? '', 'tecnia')
     if (!tipoOpTecnia) {
-      // Natureza sem "remessa"/"retorno" (ou com ambas, ambígua): desconsiderada.
-      resultado.erros.push(
-        `Tecnia NF-e ${nfe?.numero_nfe ?? anexo.nome_arquivo}: natureza "${nfe?.natureza_operacao || 'sem natureza'}" não contabilizada (não é remessa nem retorno).`
-      )
+      resultado.erros.push(`Tecnia NF-e ${nfe?.numero_nfe ?? anexo.nome_arquivo}: ${motivoTecnia}`)
       return
     }
 
@@ -945,7 +934,15 @@ async function persistirAnexo(
   //     DANFE / qVol do XML), fator 1:1 — sem produto associado
   // ─────────────────────────────────────────────────────────────────
   if (modoCalculo === 'avery') {
-    const tipoOpAvery = tipoOperacaoPorNatureza(nfe?.natureza_operacao || '')
+    // Mesmo classificador da pré-filtragem — antes usava a regra genérica, que
+    // classificava "Retorno de mercadoria depositada" como entrada (invertendo
+    // o sinal do estoque). Ver classificarOperacaoV2.
+    const { tipo: tipoOpAvery, motivo: motivoAvery } =
+      classificarOperacaoV2(nfe?.natureza_operacao ?? '', 'avery')
+    if (!tipoOpAvery) {
+      resultado.erros.push(`Avery NF-e ${nfe?.numero_nfe ?? anexo.nome_arquivo}: ${motivoAvery}`)
+      return
+    }
     const volumesAvery = nfe?.quantidade_especie ?? null
     const valorVolumeAvery = clienteConfig?.valor_pallet ?? 40
     const aliquotaAvery = clienteConfig?.aliquota_imposto ?? 0
@@ -991,7 +988,12 @@ async function persistirAnexo(
   // ─────────────────────────────────────────────────────────────────
   // LÓGICA PADRÃO (Alphalum e demais clientes)
   // ─────────────────────────────────────────────────────────────────
-  const tipoOp = tipoOperacaoPorNatureza(nfe?.natureza_operacao || '')
+  const { tipo: tipoOp, motivo: motivoPadrao } =
+    classificarOperacaoV2(nfe?.natureza_operacao ?? '', modoCalculo)
+  if (!tipoOp) {
+    resultado.erros.push(`NF-e ${nfe?.numero_nfe ?? anexo.nome_arquivo}: ${motivoPadrao}`)
+    return
+  }
   const itensNfe = nfe?.itens ?? []
 
   // Buscar produtos do cliente para tentar detecção multi-produto

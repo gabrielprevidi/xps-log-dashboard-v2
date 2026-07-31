@@ -1,13 +1,12 @@
 /**
  * Reconhecimento e parsing de anexos de NF-e — independente do canal.
  *
- * Extraído de `email-service.ts` (que era acoplado ao Microsoft Graph) para ser
- * compartilhado entre:
- *   • V1 — leitura via Graph  (email-service.ts)
- *   • V2 — leitura via IMAP   (imap-service.ts)
+ * Nasceu extraído do `email-service.ts` da V1, que era acoplado ao Microsoft
+ * Graph. Na V2 aquele arquivo foi removido junto com todo o caminho do Graph, e
+ * este virou a única implementação: `imap-service.ts` é seu único consumidor.
  *
- * Nenhuma regra foi alterada na extração: os mesmos arquivos são aceitos e
- * ignorados que na V1.
+ * Nenhuma regra foi alterada na extração — os mesmos arquivos são aceitos e
+ * ignorados que na V1 — exceto pela adição de manifesto/MDF-e aos ignorados.
  */
 import { parseNFe, DadosNFe } from './nfe-parser'
 import { parseNFePDF, parseNFePDFTodas } from './nfe-pdf-parser'
