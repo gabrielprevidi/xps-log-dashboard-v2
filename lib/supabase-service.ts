@@ -34,15 +34,49 @@ export async function emailJaImportado(messageId: string): Promise<boolean> {
   return !!data
 }
 
+/**
+ * Uma linha de `arquivos_nfe` sem natureza NEM tipo de operação é uma
+ * LINHA-FANTASMA: o anexo foi registrado, mas a leitura não extraiu nada dele.
+ * Ela nunca vai gerar movimentação.
+ *
+ * Isso acontece quando o parse do PDF falha (a lib devolve texto vazio sem
+ * lançar erro) e o nome do arquivo ainda assim identifica uma NF-e. Em julho de
+ * 2026 foram 153 linhas assim; 128 notas não existiam em nenhum outro registro.
+ *
+ * O agravante era a deduplicação: `hash_arquivo` é UNIQUE, e tanto o hash
+ * quanto a chave davam a nota por processada. Reenviar o mesmo PDF não
+ * recuperava nada — era descartado como duplicado, para sempre. Por isso
+ * linha-fantasma NÃO bloqueia: ela é COMPLETADA por `persistirAnexo` quando o
+ * arquivo volta e a leitura funciona.
+ */
+const COLUNAS_FANTASMA = 'id, natureza_operacao, tipo_operacao'
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const ehFantasma = (linha: any) => !linha?.natureza_operacao && !linha?.tipo_operacao
+
+/** Linha-fantasma existente para este anexo (por hash ou por chave), se houver. */
+export async function arquivoFantasmaExistente(
+  hash: string,
+  chaveNfe?: string | null,
+): Promise<string | null> {
+  const supabase = getServerClient()
+  const { data: porHash } = await supabase
+    .from('arquivos_nfe').select(COLUNAS_FANTASMA).eq('hash_arquivo', hash).maybeSingle()
+  if (porHash) return ehFantasma(porHash) ? porHash.id : null
+  if (!chaveNfe || chaveNfe.length < 44) return null
+  const { data: porChave } = await supabase
+    .from('arquivos_nfe').select(COLUNAS_FANTASMA).eq('chave_nfe', chaveNfe).maybeSingle()
+  return porChave && ehFantasma(porChave) ? porChave.id : null
+}
+
 /** Verifica se o arquivo já foi processado (pelo hash SHA-256). */
 export async function arquivoJaProcessado(hash: string): Promise<boolean> {
   const supabase = getServerClient()
   const { data } = await supabase
     .from('arquivos_nfe')
-    .select('id')
+    .select(COLUNAS_FANTASMA)
     .eq('hash_arquivo', hash)
     .maybeSingle()
-  return !!data
+  return !!data && !ehFantasma(data)
 }
 
 /** Verifica se a NFe já foi importada (pela chave de acesso de 44 dígitos). */
@@ -51,10 +85,21 @@ export async function nfeJaImportada(chaveNfe: string): Promise<boolean> {
   const supabase = getServerClient()
   const { data } = await supabase
     .from('arquivos_nfe')
-    .select('id')
+    .select(COLUNAS_FANTASMA)
     .eq('chave_nfe', chaveNfe)
     .maybeSingle()
-  return !!data
+  return !!data && !ehFantasma(data)
+}
+
+/**
+ * Chave de acesso lida do NOME do arquivo (44 dígitos), usada quando a leitura
+ * do documento não extraiu nada. Não gera movimentação sozinha, mas deixa a
+ * linha-fantasma identificável — sem isso, descobrir QUAL nota se perdeu exige
+ * garimpar nome de arquivo à mão.
+ */
+export function chaveDoNomeArquivo(nomeArquivo: string): string | null {
+  const base = (nomeArquivo || '').replace(/^.*[/\\]/, '')
+  return base.match(/^(\d{44})(?!\d)/)?.[1] ?? null
 }
 
 // ─────────────────────────────────────────────
@@ -695,30 +740,36 @@ async function persistirAnexo(
   // Determina tipo de arquivo
   const tipoArquivo = anexo.nome_arquivo.toLowerCase().endsWith('.xml') ? 'xml' : 'pdf'
 
-  // Salvar arquivo_nfe
-  const { data: arquivoSalvo, error: arquivoErr } = await supabase
-    .from('arquivos_nfe')
-    .insert({
-      email_id: emailId,
-      nome_arquivo: anexo.nome_arquivo,
-      tipo_arquivo: tipoArquivo,
-      hash_arquivo: anexo.hash,
-      chave_nfe: nfe?.chave_nfe || null,
-      numero_nfe: nfe?.numero_nfe || null,
-      data_emissao: nfe?.data_emissao || null,
-      cnpj_emitente: nfe?.cnpj_emitente || null,
-      nome_emitente: nfe?.nome_emitente || null,
-      cnpj_destinatario: nfe?.cnpj_destinatario || null,
-      nome_destinatario: nfe?.nome_destinatario || null,
-      cfop: nfe?.cfop || null,
-      natureza_operacao: nfe?.natureza_operacao || null,
-      tipo_operacao: nfe?.tipo_operacao || null,
-      peso_liquido_ton: pesoTon,
-      pallets_calculados: anexo.pallets_calculados,
-      processado: true,
-    })
-    .select('id')
-    .single()
+  const chaveArquivo = nfe?.chave_nfe || chaveDoNomeArquivo(anexo.nome_arquivo)
+
+  // Linha-fantasma da mesma nota (ver arquivoFantasmaExistente): completa aquela
+  // linha em vez de inserir — `hash_arquivo` é UNIQUE, um INSERT falharia e a
+  // nota continuaria fora do sistema.
+  const fantasmaId = await arquivoFantasmaExistente(anexo.hash, chaveArquivo)
+
+  const camposArquivo = {
+    email_id: emailId,
+    nome_arquivo: anexo.nome_arquivo,
+    tipo_arquivo: tipoArquivo,
+    hash_arquivo: anexo.hash,
+    chave_nfe: chaveArquivo,
+    numero_nfe: nfe?.numero_nfe || null,
+    data_emissao: nfe?.data_emissao || null,
+    cnpj_emitente: nfe?.cnpj_emitente || null,
+    nome_emitente: nfe?.nome_emitente || null,
+    cnpj_destinatario: nfe?.cnpj_destinatario || null,
+    nome_destinatario: nfe?.nome_destinatario || null,
+    cfop: nfe?.cfop || null,
+    natureza_operacao: nfe?.natureza_operacao || null,
+    tipo_operacao: nfe?.tipo_operacao || null,
+    peso_liquido_ton: pesoTon,
+    pallets_calculados: anexo.pallets_calculados,
+    processado: true,
+  }
+
+  const { data: arquivoSalvo, error: arquivoErr } = fantasmaId
+    ? await supabase.from('arquivos_nfe').update(camposArquivo).eq('id', fantasmaId).select('id').single()
+    : await supabase.from('arquivos_nfe').insert(camposArquivo).select('id').single()
 
   if (arquivoErr || !arquivoSalvo) {
     resultado.erros.push(
