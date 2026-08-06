@@ -354,8 +354,13 @@ function parseTextoNFe(texto: string): DadosNFe | null {
       // só dispara em linhas que NÃO começam com NCM, sem afetar os itens já lidos.
       if (!/^\d{8}/.test(linha) && !/DESCRI|VALOR|NCM|CFOP|CODIGO/i.test(linha)) {
         const cdn = linha.match(
-          new RegExp(`^(\\d{4,12})([A-Za-zÀ-ú].*?)(\\d{8})\\d*\\s+\\d{2,6}(?=${UNIT_PAT})`, 'i')
+          new RegExp(`^(\\d{1,8}\\.\\d{1,8}|\\d{4,12})([A-Za-zÀ-ú].*?)(\\d{8})\\d*\\s+\\d{2,6}(?=${UNIT_PAT})`, 'i')
         )
+        // NCM pelo bloco NCM+O/CST+CFOP+UNID., quando ele aparece inteiro na linha.
+        // O `.*?` preguiçoso da descrição acima faz o grupo de 8 dígitos parar cedo
+        // demais em descrição terminada em número: "... - SKU 60.0820" seguido do
+        // NCM 25083000 era lido como "08202508" (NF-e 248 da Alphalum).
+        const ncmBloco = linha.match(new RegExp(`(\\d{8})\\d\\s+\\d{2}\\d{4}(?=${UNIT_PAT})`, 'i'))
         const uq = linha.match(new RegExp(`(${UNIT_PAT})(\\d{1,4}[.,]\\d{1,4})`, 'i'))
         if (cdn && uq) {
           const quantidade = parseFloat(uq[2].replace(',', '.')) || 0
@@ -366,7 +371,7 @@ function parseTextoNFe(texto: string): DadosNFe | null {
               numero_item: itens.length + 1,
               codigo: cdn[1],
               descricao: descricao.slice(0, 80),
-              ncm: cdn[3],
+              ncm: ncmBloco?.[1] ?? cdn[3],
               cfop: cfopM ? cfopM[1] : '',
               unidade: uq[1].toUpperCase(),
               quantidade,
@@ -409,6 +414,13 @@ function parseTextoNFe(texto: string): DadosNFe | null {
         partes.unshift(prev)
         // Linha que inicia com código numérico + descrição (início do item) → para
         if (/^\d+\s*[A-Za-zÀ-ú]/.test(prev)) break
+        // Idem para código COM PONTO colado na descrição ("11.0009ALUM 9 TM..." da
+        // Alphalum): sem isto a busca passava direto pelo início do item e varria mais
+        // 4 linhas acima, colando cabeçalho de coluna na descrição
+        // ("APROX. DOSTRIBUTOS11.0009ALUM..."). Exige a letra COLADA no número — com
+        // espaço no meio o padrão casaria continuação de descrição ("1.37 X 50M" da
+        // Avery), truncando o item.
+        if (/^\d{1,8}\.\d{2,8}[A-Za-zÀ-ú]/.test(prev)) break
       }
       const codigoDesc = partes.join('')
       if (!codigoDesc) continue
@@ -421,7 +433,10 @@ function parseTextoNFe(texto: string): DadosNFe | null {
       let codigo = `PROD_${itens.length + 1}`
       let descricao = semNumItem
 
-      const numColado = semNumItem.match(/^(\d{4,12})([A-Za-z].*)/)
+      // Código numérico colado à descrição. A primeira alternativa cobre código
+      // com ponto ("11.0009ALUM 9 TM 1.200 KG BIG BAG"); sem ela o item ficava
+      // com código sintético PROD_n e a descrição inteira virava "descrição".
+      const numColado = semNumItem.match(/^(\d{1,8}\.\d{1,8}|\d{4,12})([A-Za-z].*)/)
       if (numColado) {
         codigo = numColado[1]
         descricao = numColado[2].trim()

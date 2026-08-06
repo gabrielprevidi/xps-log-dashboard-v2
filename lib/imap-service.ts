@@ -186,6 +186,24 @@ export async function lerEmailsNFeImap(opcoes: OpcoesLeitura = {}): Promise<Resu
       !ignoradas.some(ig => b.path === ig || b.path.startsWith(ig + (b.delimiter || '/')))
     )
 
+    // Passagem de STATUS em TODAS as pastas antes de processar qualquer uma.
+    // Custa ~5ms por pasta e dá o tamanho real da fila. Antes, a contagem era
+    // feita durante o processamento e parava junto com ele — reportava 465
+    // quando o total era 646, escondendo 180 mensagens na pasta Arconvert.
+    const pendentesPorPasta = new Map<string, number>()
+    for (const box of alvo) {
+      try {
+        const st = await client.status(box.path, { uidNext: true, uidValidity: true })
+        const marca = marcas[box.path]
+        const mesmaNumeracao = marca && Number(marca.uid_validity) === Number(st.uidValidity)
+        const pend = mesmaNumeracao
+          ? Math.max(0, Number(st.uidNext) - 1 - Number(marca.ultimo_uid))
+          : Number(st.uidNext) > 1 ? -1 : 0   // -1 = pasta nova, precisa de linha de base
+        pendentesPorPasta.set(box.path, pend)
+        if (pend > 0) resultado.fila_restante += pend
+      } catch { /* pasta inacessível */ }
+    }
+
     for (const box of alvo) {
       if (resultado.mensagens_examinadas >= limite) break
       if (semTempo()) { resultado.interrompida_por_tempo = true; break }
@@ -195,17 +213,8 @@ export async function lerEmailsNFeImap(opcoes: OpcoesLeitura = {}): Promise<Resu
       // STATUS antes de abrir: custa ~5ms contra ~400ms do mailboxOpen. Pasta
       // sem nada novo desde a última rodada nem chega a ser aberta — sem isto,
       // varrer 28 pastas custava 11,4s a cada 15 minutos, mesmo sem trabalho.
-      try {
-        const st = await client.status(box.path, { uidNext: true, uidValidity: true })
-        const mesmaNumeracao = marca && Number(marca.uid_validity) === Number(st.uidValidity)
-        const pendentesAqui = mesmaNumeracao
-          ? Math.max(0, Number(st.uidNext) - 1 - Number(marca.ultimo_uid))
-          : 0
-        resultado.fila_restante += pendentesAqui
-        if (mesmaNumeracao && pendentesAqui === 0) continue
-      } catch {
-        continue // pasta inacessível — segue adiante
-      }
+      // Já sabemos, da passagem de STATUS acima, se esta pasta tem novidade.
+      if (pendentesPorPasta.get(box.path) === 0) continue
 
       let mb
       try {
@@ -260,6 +269,12 @@ export async function lerEmailsNFeImap(opcoes: OpcoesLeitura = {}): Promise<Resu
         const partes = coletarPartesAnexo(msg.bodyStructure)
         if (partes.length === 0) {
           resultado.ignorados.push({ pasta: box.path, uid, assunto, motivo: 'sem anexo XML/PDF/ZIP' })
+          // A mensagem foi examinada e resolvida: a marca d'água TEM de avançar.
+          // Faltava aqui — e este é o caminho mais comum, já que a maioria dos
+          // emails não tem anexo. Sem isto a rodada relia as mesmas mensagens
+          // indefinidamente: 2681 exames para avançar 299 posições.
+          estado.ultimo_uid = Math.max(estado.ultimo_uid, uid)
+          concluidasNestaRodada++
           continue
         }
 

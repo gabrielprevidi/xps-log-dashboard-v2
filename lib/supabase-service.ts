@@ -325,6 +325,47 @@ function pesoTonItem(item: ItemNFe): number {
   return 0
 }
 
+/** Item cuja unidade comercial é quilo — o único caso ambíguo (ver pesosTonDosItens). */
+function itemEmKg(item: ItemNFe): boolean {
+  if (item.peso_liquido > 0) return false
+  const u = (item.unidade ?? '').toUpperCase().replace(/[^A-Z]/g, '')
+  return u === 'KG' || u === 'KGS'
+}
+
+/**
+ * Peso em toneladas de cada item, com a unidade dos itens em KG conferida
+ * contra o peso líquido total do documento.
+ *
+ * Há emitentes que rotulam a coluna UNID. como "KG" mas preenchem a QUANT. em
+ * TONELADAS. A Alphalum é um deles: na NF-e 248 as linhas são TON 7,0000 +
+ * KG 2,0000 + KG 12,0000 e o PESO LÍQUIDO do DANFE é 21.000,000 kg — os três
+ * números somam 21 só se todos forem lidos como tonelada. O valor unitário
+ * confirma: é o mesmo (R$ 3.700,41) nas linhas TON e nas linhas KG. Dividindo
+ * as linhas KG por mil, essa nota entrava como 7,014 t em vez de 21 t.
+ *
+ * Corrigir isso para todo mundo seria pior — em NF-e normal "KG" é quilo mesmo.
+ * Então a decisão não é por cliente, é por documento: só troca a interpretação
+ * quando o PESO LÍQUIDO do próprio DANFE desempata, isto é, quando a soma em
+ * quilo NÃO bate com o total e a soma em tonelada bate. Sem peso líquido no
+ * documento, ou com as duas somas igualmente (im)plausíveis, mantém KG = quilo.
+ */
+function pesosTonDosItens(itens: ItemNFe[], pesoLiquidoTotalKg: number): number[] {
+  const comoQuilo = itens.map(pesoTonItem)
+  if (!itens.some(itemEmKg)) return comoQuilo
+  if (!(pesoLiquidoTotalKg > 0)) return comoQuilo
+
+  const comoTonelada = itens.map((item, i) => (itemEmKg(item) ? item.quantidade : comoQuilo[i]))
+  const totalTon = pesoLiquidoTotalKg / 1000
+  // 1% de folga absorve arredondamento do DANFE; o piso de 10 kg evita que
+  // notas muito pequenas fiquem sem tolerância nenhuma.
+  const folga = Math.max(totalTon * 0.01, 0.01)
+  const soma = (v: number[]) => v.reduce((a, b) => a + b, 0)
+  const bateQuilo = Math.abs(soma(comoQuilo) - totalTon) <= folga
+  const bateTonelada = Math.abs(soma(comoTonelada) - totalTon) <= folga
+
+  return !bateQuilo && bateTonelada ? comoTonelada : comoQuilo
+}
+
 /**
  * Tenta casar um único item da NF-e com um produto cadastrado do cliente.
  * Mesma prioridade de identificarProduto: NCM > cProd > descrição.
@@ -404,12 +445,13 @@ function matchProdutoComLista(
  * Retorna null se não houver ≥ 2 grupos distintos com pesos determináveis.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function agruparItensPorProduto(itens: ItemNFe[], produtos: any[]): Array<{ prod: any | null; pesoTon: number; descricaoItem: string }> | null {
+function agruparItensPorProduto(itens: ItemNFe[], produtos: any[], pesoLiquidoTotalKg = 0): Array<{ prod: any | null; pesoTon: number; descricaoItem: string }> | null {
   if (itens.length === 0) return null
+  const pesos = pesosTonDosItens(itens, pesoLiquidoTotalKg)
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const grupos = new Map<string, { prod: any | null; pesoTon: number; descricaoItem: string }>()
-  for (const item of itens) {
-    const peso = pesoTonItem(item)
+  for (const [i, item] of itens.entries()) {
+    const peso = pesos[i]
     if (peso <= 0) continue
     const prod = produtos.length > 0 ? matchItemParaProduto(item, produtos) : null
     // Agrupa por: ID do produto cadastrado → código da NF-e → descrição
@@ -1004,7 +1046,11 @@ async function persistirAnexo(
     .eq('ativo', true)
     .order('ordem', { ascending: true })
 
-  const gruposMultiProduto = agruparItensPorProduto(itensNfe, produtosCliente ?? [])
+  const gruposMultiProduto = agruparItensPorProduto(
+    itensNfe,
+    produtosCliente ?? [],
+    nfe?.peso_liquido_total ?? 0,
+  )
 
   if (gruposMultiProduto) {
     // NF-e com múltiplos produtos — uma movimentação por produto/código
@@ -1053,7 +1099,10 @@ async function persistirAnexo(
       cliente_id: clienteId,
       arquivo_nfe_id: arquivoSalvo.id,
       produto_id: produtoMatch?.produto_id ?? null,
-      produto_nome: produtoMatch?.produto_nome ?? null,
+      // Sem produto cadastrado, cai na descrição do item — mesmo critério do
+      // caminho multi-produto acima. Antes ficava nulo, e uma NF-e de item único
+      // aparecia sem nada na coluna de produto (ex.: NF-e 253 da Alphalum).
+      produto_nome: produtoMatch?.produto_nome ?? itensNfe[0]?.descricao ?? null,
       tipo_movimentacao: tipoOp,
       categoria_movimentacao: 'pa' as const,
       fornecedor: tipoOp === 'entrada' ? (nfe?.nome_emitente ?? null) : null,
