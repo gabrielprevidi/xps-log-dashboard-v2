@@ -113,14 +113,21 @@ export async function POST(request: NextRequest) {
 
     const arquivar: Array<{ pasta: string; uid: number }> = []
     let interrompidaNaGravacao = false
+    // Garantia de progresso, igual à da varredura: a rodada só pode adiar um
+    // email por falta de tempo se JÁ tiver processado outro. Sem isto, uma
+    // varredura que estoura o orçamento sozinha (um email com 24 anexos leva
+    // ~50s) faz a gravação adiar TODOS, a marca d'água não avança, e a rodada
+    // seguinte repete tudo — travou 825 mensagens por dois dias em 04/08/2026.
+    let processadasNestaRodada = 0
 
     // Ordem crescente de UID dentro de cada pasta — a marca d'água depende disso.
     const fila = [...leitura.emails].sort((a, b) =>
       (a.pasta ?? '').localeCompare(b.pasta ?? '') || (a.uid ?? 0) - (b.uid ?? 0))
 
     for (const email of fila) {
-      // Esgotou o tempo: o que sobrou entra na próxima rodada.
-      if (!dryRun && Date.now() - t0 > orcamentoTotal) {
+      // Esgotou o tempo: o que sobrou entra na próxima rodada — desde que algo
+      // já tenha sido processado, senão a fila trava (ver acima).
+      if (!dryRun && processadasNestaRodada > 0 && Date.now() - t0 > orcamentoTotal) {
         interrompidaNaGravacao = true
         marcarPendente(email.pasta, email.uid)
         continue
@@ -135,6 +142,7 @@ export async function POST(request: NextRequest) {
       }
 
       const r = await processarEmailV2(email)
+      processadasNestaRodada++
       if (r.aceito) {
         emailsAceitos++
         nfesSalvas += r.movimentacoes_salvas

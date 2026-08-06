@@ -36,6 +36,20 @@ const EXTENSOES = /\.(xml|pdf|zip)$/i
  */
 const ANEXO_MAX_KB = Number(process.env.ANEXO_MAX_KB || 3072)
 
+/**
+ * Teto de tempo para UMA mensagem. Rede de segurança independente do conteúdo.
+ *
+ * Sem ela, um email com 8 PDFs alfandegários de 4,2 MB consumia ~50s de
+ * varredura; somada à gravação, a rodada estourava os 60s da Vercel e a função
+ * era morta antes de avançar a marca d'água. A rodada seguinte repetia tudo:
+ * 825 mensagens ficaram paradas por dois dias em 04/08/2026.
+ *
+ * Ao estourar, a mensagem é abandonada, REGISTRADA em `ignorados` e a marca
+ * d'água AVANÇA — porque insistir nela bloquearia a fila indefinidamente.
+ * Perder uma mensagem visível é melhor que travar todas em silêncio.
+ */
+const MENSAGEM_MAX_MS = Number(process.env.MENSAGEM_MAX_MS || 25_000)
+
 export interface OpcoesLeitura {
   /** Não atualiza marca d'água nem toca em nada. Usado pelo diagnóstico. */
   dryRun?: boolean
@@ -241,7 +255,9 @@ export async function lerEmailsNFeImap(opcoes: OpcoesLeitura = {}): Promise<Resu
         }
 
         const anexosXML: AnexoXML[] = []
+        const tMensagem = Date.now()
         let abortadaNoMeio = false
+        let caraDemais = false
         const grandes = partes.filter(p => p.tamanho > ANEXO_MAX_KB * 1024)
         for (const g of grandes) {
           resultado.ignorados.push({
@@ -255,6 +271,11 @@ export async function lerEmailsNFeImap(opcoes: OpcoesLeitura = {}): Promise<Resu
           // acontecia entre mensagens. Aqui ele pode ser abandonado no meio —
           // a marca d'água não avança sobre ele e a próxima rodada refaz a
           // mensagem inteira; os anexos já gravados caem na deduplicação.
+          // Mensagem cara demais por si só: abandona e SEGUE EM FRENTE.
+          if (Date.now() - tMensagem > MENSAGEM_MAX_MS) {
+            caraDemais = true
+            break
+          }
           if (semTempo() && concluidasNestaRodada > 0) {
             abortadaNoMeio = true
             resultado.interrompida_por_tempo = true
@@ -266,6 +287,16 @@ export async function lerEmailsNFeImap(opcoes: OpcoesLeitura = {}): Promise<Resu
           } catch (err) {
             console.error(`Falha ao baixar ${p.nome} (${box.path} uid ${uid}):`, err)
           }
+        }
+
+        if (caraDemais) {
+          resultado.ignorados.push({
+            pasta: box.path, uid, assunto,
+            motivo: `mensagem cara demais: passou de ${Math.round(MENSAGEM_MAX_MS / 1000)}s processando ${partes.length} anexos — PULADA, revisar à mão`,
+          })
+          estado.ultimo_uid = Math.max(estado.ultimo_uid, uid)
+          concluidasNestaRodada++
+          continue
         }
 
         if (abortadaNoMeio) continue   // sem avançar a marca d'água

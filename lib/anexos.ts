@@ -50,6 +50,17 @@ export function ehNomePdfIgnorado(nomeLower: string): boolean {
     // Observado em 30/07/2026: "MANIFESTO 126507 XPS.pdf", "MANIFESTO 113449 EXSA.pdf".
     nomeLower.includes('manifesto') ||
     /\bmdf-?e\b/.test(nomeLower) ||
+    // Documentos aduaneiros de importação. Chegam em lotes de 8+ por email,
+    // somando megabytes, e o parsing deles consumia ~50s por mensagem — o que
+    // travou a fila em 04/08/2026. Nenhum é NF-e.
+    nomeLower.includes('proof of clearance') ||
+    nomeLower.includes('proof of payment') ||
+    nomeLower.includes('duty payment') ||
+    nomeLower.includes('import declaration') ||
+    nomeLower.includes('bill of lading') ||
+    nomeLower.includes('transport invoice') ||
+    nomeLower.includes('merchant navy') ||
+    nomeLower.includes('packing') ||
     // "Confirmação de Pedido.pdf" — o parser capturaria o número do pedido
     // como se fosse número de nota.
     /confirma[çc][aã]o/.test(nomeLower) ||
