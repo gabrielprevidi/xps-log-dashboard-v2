@@ -22,6 +22,7 @@ import {
   lerEmailsNFeImap, arquivarProcessados, limparProcessadosAntigos,
 } from '@/lib/imap-service'
 import { processarEmailV2, limparCacheClientes } from '@/lib/ingestao-v2'
+import { arquivoJaProcessado } from '@/lib/supabase-service'
 import { getServerClient } from '@/lib/supabase'
 import { getSessaoAdmin } from '@/lib/admin-auth'
 
@@ -104,7 +105,10 @@ export async function POST(request: NextRequest) {
     // A varredura fica com metade; a outra metade é para gravar.
     const tScan = Date.now()
     const leitura = await lerEmailsNFeImap({
-      dryRun, limite, marcas, dataCorte, orcamentoMs: Math.round(orcamentoTotal * 0.45),
+      dryRun, limite, marcas, dataCorte,
+      orcamentoMs: Math.round(orcamentoTotal * 0.45),
+      // Permite retomar email-lote sem reparsear o que já foi gravado.
+      jaProcessado: arquivoJaProcessado,
     })
     const msVarredura = Date.now() - tScan
 
@@ -165,7 +169,18 @@ export async function POST(request: NextRequest) {
     // Emails cujos anexos nem foram reconhecidos como NF-e
     for (const ig of leitura.ignorados) {
       emailsDescartados++
-      motivos['anexo_nao_nfe'] = (motivos['anexo_nao_nfe'] ?? 0) + 1
+      // Agrupar tudo como "anexo_nao_nfe" escondia o caso grave: mensagem
+      // PULADA por estourar o teto de tempo, que pode conter NF-e de verdade.
+      motivos[ig.categoria] = (motivos[ig.categoria] ?? 0) + 1
+    }
+    // Mensagem pulada nunca é rotina: vai para os erros, que aparecem no log
+    // da execução e na tela.
+    for (const ig of leitura.ignorados.filter(i => i.categoria === 'mensagem_pulada')) {
+      erros.push(`PULADA ${ig.pasta} uid ${ig.uid}: ${ig.assunto.slice(0, 50)}`)
+    }
+    // Email-lote não processado por inteiro: precisa de conferência humana.
+    for (const ig of leitura.ignorados.filter(i => i.categoria === 'lote_nao_processado')) {
+      erros.push(`EMAIL-LOTE ${ig.pasta} uid ${ig.uid} "${ig.assunto.slice(0, 40)}": ${ig.motivo}`)
     }
 
     if (dryRun) {

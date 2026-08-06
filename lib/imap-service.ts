@@ -13,6 +13,7 @@
  * camada de persistência seja compartilhada.
  */
 import { ImapFlow, type FetchMessageObject } from 'imapflow'
+import { createHash } from 'crypto'
 import {
   processarArquivoAnexo, extrairCnpjsDoTexto,
   type AnexoXML, type EmailProcessado,
@@ -68,6 +69,13 @@ export interface OpcoesLeitura {
   marcas?: Record<string, { ultimo_uid: number; uid_validity: number }>
   /** Primeira passagem: busca por data em vez de UID. */
   dataCorte?: string
+  /**
+   * Consulta se um anexo já foi processado, pelo hash. Chamada ANTES do parse,
+   * que é a parte cara. É o que torna viável retomar um email-lote: ao revisitar
+   * a mensagem, os anexos já feitos são descartados por poucos milissegundos em
+   * vez de reparseados.
+   */
+  jaProcessado?: (hash: string) => Promise<boolean>
 }
 
 export interface EstadoPasta {
@@ -90,7 +98,7 @@ export interface ResultadoLeitura {
    * nada a mais. É o que permite distinguir "ocioso" de "travado".
    */
   fila_restante: number
-  ignorados: Array<{ pasta: string; uid: number; assunto: string; motivo: string }>
+  ignorados: Array<{ pasta: string; uid: number; assunto: string; motivo: string; categoria: string }>
 }
 
 export function criarClienteImap(): ImapFlow {
@@ -162,7 +170,10 @@ async function baixarParte(client: ImapFlow, uid: number, part: string): Promise
 }
 
 export async function lerEmailsNFeImap(opcoes: OpcoesLeitura = {}): Promise<ResultadoLeitura> {
-  const { dryRun = false, limite = 25, marcas = {}, dataCorte, orcamentoMs = 20_000 } = opcoes
+  const {
+    dryRun = false, limite = 25, marcas = {}, dataCorte,
+    orcamentoMs = 20_000, jaProcessado,
+  } = opcoes
   const inicio = Date.now()
   const semTempo = () => Date.now() - inicio > orcamentoMs
   // Uma mensagem só pode ser abandonada no meio se outra já tiver sido
@@ -268,7 +279,7 @@ export async function lerEmailsNFeImap(opcoes: OpcoesLeitura = {}): Promise<Resu
         const assunto = msg.envelope?.subject ?? ''
         const partes = coletarPartesAnexo(msg.bodyStructure)
         if (partes.length === 0) {
-          resultado.ignorados.push({ pasta: box.path, uid, assunto, motivo: 'sem anexo XML/PDF/ZIP' })
+          resultado.ignorados.push({ pasta: box.path, uid, assunto, categoria: 'sem_anexo', motivo: 'sem anexo XML/PDF/ZIP' })
           // A mensagem foi examinada e resolvida: a marca d'água TEM de avançar.
           // Faltava aqui — e este é o caminho mais comum, já que a maioria dos
           // emails não tem anexo. Sem isto a rodada relia as mesmas mensagens
@@ -285,17 +296,15 @@ export async function lerEmailsNFeImap(opcoes: OpcoesLeitura = {}): Promise<Resu
         const grandes = partes.filter(p => p.tamanho > ANEXO_MAX_KB * 1024)
         for (const g of grandes) {
           resultado.ignorados.push({
-            pasta: box.path, uid, assunto,
+            pasta: box.path, uid, assunto, categoria: 'anexo_grande',
             motivo: `anexo grande demais para processar automaticamente: ${g.nome} (${Math.round(g.tamanho / 1024)} KB, teto ${ANEXO_MAX_KB} KB)`,
           })
         }
+        let novosNestaMensagem = 0
         for (const p of partes.filter(p => p.tamanho <= ANEXO_MAX_KB * 1024)) {
-          // Email com muitos anexos (observado: 16 numa mensagem só, 36s de
-          // processamento) estourava o orçamento porque a verificação só
-          // acontecia entre mensagens. Aqui ele pode ser abandonado no meio —
-          // a marca d'água não avança sobre ele e a próxima rodada refaz a
-          // mensagem inteira; os anexos já gravados caem na deduplicação.
-          // Mensagem cara demais por si só: abandona e SEGUE EM FRENTE.
+          // Teto de tempo só vale DEPOIS de ao menos um anexo novo ter sido
+          // processado. Garante progresso mesmo num email-lote: cada rodada
+          // avança alguns anexos e a mensagem termina em algumas passagens.
           if (Date.now() - tMensagem > MENSAGEM_MAX_MS) {
             caraDemais = true
             break
@@ -307,27 +316,43 @@ export async function lerEmailsNFeImap(opcoes: OpcoesLeitura = {}): Promise<Resu
           }
           try {
             const buffer = await baixarParte(client, uid, p.part)
+            // Dedup pelo hash ANTES do parse: num email-lote revisitado, os
+            // anexos já gravados saem daqui em milissegundos.
+            if (jaProcessado) {
+              const h = createHash('sha256').update(buffer).digest('hex')
+              if (await jaProcessado(h)) continue
+            }
+            novosNestaMensagem++
             await processarArquivoAnexo(p.nome, p.tipo, buffer, anexosXML)
           } catch (err) {
             console.error(`Falha ao baixar ${p.nome} (${box.path} uid ${uid}):`, err)
           }
         }
 
+        // Email-lote que não cabe numa rodada.
+        //
+        // Tentei retomar entre rodadas: não avançar a marca d'água e continuar
+        // na próxima passagem. Não funciona — para saber quais anexos já foram
+        // gravados é preciso BAIXÁ-LOS (o hash exige os bytes), e numa mensagem
+        // de 161 anexos o download sozinho estoura os 60s da Vercel. A função
+        // era morta e a trava ficava presa.
+        //
+        // Enquanto não houver estado de progresso POR ANEXO, o comportamento
+        // correto é: gravar o que deu, AVANÇAR a marca d'água e registrar alto
+        // e bom som. Fila parada é pior que mensagem pulada — e pulada com
+        // aviso é melhor que pulada em silêncio.
         if (caraDemais) {
           resultado.ignorados.push({
-            pasta: box.path, uid, assunto,
-            motivo: `mensagem cara demais: passou de ${Math.round(MENSAGEM_MAX_MS / 1000)}s processando ${partes.length} anexos — PULADA, revisar à mão`,
+            pasta: box.path, uid, assunto, categoria: 'lote_nao_processado',
+            motivo: `EMAIL-LOTE com ${partes.length} anexos não cabe numa rodada: ${anexosXML.length} nota(s) aproveitada(s), o restante PRECISA de lançamento manual`,
           })
-          estado.ultimo_uid = Math.max(estado.ultimo_uid, uid)
-          concluidasNestaRodada++
-          continue
         }
 
         if (abortadaNoMeio) continue   // sem avançar a marca d'água
 
         if (anexosXML.length === 0) {
           resultado.ignorados.push({
-            pasta: box.path, uid, assunto,
+            pasta: box.path, uid, assunto, categoria: 'anexo_nao_nfe',
             motivo: `anexos não reconhecidos como NF-e: ${partes.map(p => p.nome).join(', ')}`,
           })
           estado.ultimo_uid = Math.max(estado.ultimo_uid, uid)
