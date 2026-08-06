@@ -47,7 +47,11 @@ function autorizado(request: NextRequest): boolean {
 }
 
 export async function POST(request: NextRequest) {
-  if (!autorizado(request)) {
+  // Token do agendador OU sessão de admin — a segunda é o que permite o botão
+  // "Sincronizar agora" no dashboard, para quando uma rodada falha e não se
+  // quer esperar os 15 minutos seguintes.
+  const viaToken = autorizado(request)
+  if (!viaToken && !(await getSessaoAdmin())) {
     return NextResponse.json({ error: 'Não autorizado' }, { status: 401 })
   }
 
@@ -69,7 +73,7 @@ export async function POST(request: NextRequest) {
   let execucaoId: string | null = null
   if (!dryRun) {
     const { data, error } = await supabase.from('sync_execucoes')
-      .insert({ status: 'rodando', gatilho: body.gatilho ?? 'cron' })
+      .insert({ status: 'rodando', gatilho: body.gatilho ?? (viaToken ? 'cron' : 'manual') })
       .select('id').single()
     if (error || !data) {
       return NextResponse.json(

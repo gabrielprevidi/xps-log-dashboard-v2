@@ -16,7 +16,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { RefreshCw, CheckCircle2, AlertTriangle, Clock, Inbox } from 'lucide-react'
+import { RefreshCw, CheckCircle2, AlertTriangle, Clock, Inbox, Play } from 'lucide-react'
 
 const INTERVALO_MS = 30_000
 
@@ -59,6 +59,8 @@ export default function SyncStatus({ onNovasNotas }: { onNovasNotas?: () => void
   const [execucoes, setExecucoes] = useState<Execucao[] | null>(null)
   const [saude, setSaude] = useState<Saude | null>(null)
   const [erroRede, setErroRede] = useState(false)
+  const [sincronizando, setSincronizando] = useState(false)
+  const [resultadoManual, setResultadoManual] = useState<string | null>(null)
   const [expandido, setExpandido] = useState(false)
   // Total de notas já visto — a comparação detecta o que entrou desde a última
   // consulta. Ref (não estado) para não reexecutar o efeito a cada mudança.
@@ -83,6 +85,41 @@ export default function SyncStatus({ onNovasNotas }: { onNovasNotas?: () => void
       setErroRede(true)
     }
   }, [onNovasNotas])
+
+  /**
+   * Dispara uma rodada agora, sem esperar os 15 minutos. Serve para quando uma
+   * rodada falhou ou quando se acabou de receber uma nota e não se quer esperar.
+   * Usa a mesma rota do agendador — autenticada pela sessão de admin.
+   */
+  const sincronizarAgora = useCallback(async () => {
+    setSincronizando(true)
+    setResultadoManual(null)
+    try {
+      const res = await fetch('/api/cron/sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ gatilho: 'manual' }),
+      })
+      const d = await res.json().catch(() => ({}))
+      if (res.status === 409) {
+        setResultadoManual('Já há uma rodada em andamento — aguarde ela terminar.')
+      } else if (!res.ok) {
+        setResultadoManual(`Falhou: ${d.detalhe ?? d.error ?? res.status}`)
+      } else {
+        const notas = d.nfes_salvas ?? 0
+        setResultadoManual(
+          `${d.mensagens_examinadas ?? 0} email(s) examinado(s), ${notas} nota(s) gravada(s)` +
+          (d.fila_restante ? ` · ${d.fila_restante} ainda na fila` : ' · fila zerada'),
+        )
+        if (notas > 0) onNovasNotas?.()
+      }
+      await consultar()
+    } catch (e) {
+      setResultadoManual(`Falhou: ${e instanceof Error ? e.message : String(e)}`)
+    } finally {
+      setSincronizando(false)
+    }
+  }, [consultar, onNovasNotas])
 
   useEffect(() => {
     consultar()
@@ -132,6 +169,17 @@ export default function SyncStatus({ onNovasNotas }: { onNovasNotas?: () => void
             <div className="text-lg font-semibold text-[#0d1b2e] leading-none">{notas24h}</div>
             <div className="text-[11px] text-gray-400 mt-1">notas em 24h</div>
           </div>
+          <button
+            onClick={sincronizarAgora}
+            disabled={sincronizando || rodando}
+            title="Dispara uma rodada agora, sem esperar os 15 minutos"
+            className="flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-lg border border-gray-200
+                       text-[#0d1b2e] hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition"
+          >
+            {sincronizando
+              ? <><RefreshCw className="w-3.5 h-3.5 animate-spin" /> sincronizando…</>
+              : <><Play className="w-3.5 h-3.5" /> Sincronizar agora</>}
+          </button>
           {execucoes && execucoes.length > 0 && (
             <button
               onClick={() => setExpandido(v => !v)}
@@ -156,6 +204,12 @@ export default function SyncStatus({ onNovasNotas }: { onNovasNotas?: () => void
             Abra o histórico abaixo e veja se a coluna de emails lidos está parada.
           </p>
         </div>
+      )}
+
+      {resultadoManual && (
+        <p className="mt-3 text-xs text-gray-600 bg-gray-50 border border-gray-100 rounded-lg px-3 py-2">
+          {resultadoManual}
+        </p>
       )}
 
       {erroRede && (

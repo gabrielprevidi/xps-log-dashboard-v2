@@ -51,6 +51,20 @@ const ANEXO_MAX_KB = Number(process.env.ANEXO_MAX_KB || 3072)
  */
 const MENSAGEM_MAX_MS = Number(process.env.MENSAGEM_MAX_MS || 25_000)
 
+/**
+ * Teto de anexos por mensagem — barreira ANTES de baixar qualquer coisa.
+ *
+ * O teto de tempo acima só age ENTRE um anexo e o seguinte; uma mensagem com
+ * dezenas deles já consumiu o orçamento quando a verificação roda. Um email
+ * "Notas Saidas" com 164 anexos matava a função pelo limite de 60s da Vercel a
+ * cada rodada, travando a fila inteira atrás dele.
+ *
+ * A contagem vem do BODYSTRUCTURE, que já temos de graça — nenhum byte precisa
+ * ser transferido para decidir. Acima do teto, a mensagem é REGISTRADA e
+ * pulada: lotes assim precisam de lançamento manual.
+ */
+const ANEXOS_MAX_QTD = Number(process.env.ANEXOS_MAX_QTD || 30)
+
 export interface OpcoesLeitura {
   /** Não atualiza marca d'água nem toca em nada. Usado pelo diagnóstico. */
   dryRun?: boolean
@@ -284,6 +298,16 @@ export async function lerEmailsNFeImap(opcoes: OpcoesLeitura = {}): Promise<Resu
           // Faltava aqui — e este é o caminho mais comum, já que a maioria dos
           // emails não tem anexo. Sem isto a rodada relia as mesmas mensagens
           // indefinidamente: 2681 exames para avançar 299 posições.
+          estado.ultimo_uid = Math.max(estado.ultimo_uid, uid)
+          concluidasNestaRodada++
+          continue
+        }
+
+        if (partes.length > ANEXOS_MAX_QTD) {
+          resultado.ignorados.push({
+            pasta: box.path, uid, assunto, categoria: 'lote_grande_demais',
+            motivo: `mensagem com ${partes.length} anexos (teto ${ANEXOS_MAX_QTD}) — PULADA, precisa de lançamento manual`,
+          })
           estado.ultimo_uid = Math.max(estado.ultimo_uid, uid)
           concluidasNestaRodada++
           continue
