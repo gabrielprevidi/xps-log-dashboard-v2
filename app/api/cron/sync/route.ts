@@ -31,6 +31,13 @@ export const maxDuration = 60
 /** Rodada considerada travada depois disto — a próxima assume. */
 const LOCK_TIMEOUT_MIN = 20
 
+/**
+ * Rodadas seguidas sem avançar a marca d'água, havendo fila, que caracterizam
+ * sincronização travada. Três = 45 minutos parados — cedo o bastante para agir,
+ * tarde o bastante para não alarmar por uma mensagem pesada isolada.
+ */
+const RODADAS_PARA_ALERTA = 3
+
 function autorizado(request: NextRequest): boolean {
   const esperado = process.env.CRON_SECRET
   if (!esperado) return false
@@ -220,10 +227,23 @@ export async function POST(request: NextRequest) {
         .lt('iniciado_em', new Date(Date.now() - 90 * 864e5).toISOString())
     }
 
-    // ── 8. Fecha ────────────────────────────────────────────────────────
+    // ── 8. Saúde: a marca d'água mexeu? ─────────────────────────────────
+    // Sem isto, uma rotina presa numa mensagem retorna "ok" indefinidamente —
+    // foi o que escondeu 825 emails parados por dois dias em 04/08/2026.
+    const avancou = leitura.estados.some(est => {
+      const antes = marcas[est.pasta]?.ultimo_uid ?? 0
+      return est.ultimo_uid > antes
+    })
+    if (!avancou && leitura.fila_restante > 0) {
+      await alertarSeTravada(supabase, leitura.fila_restante)
+    }
+
+    // ── 9. Fecha ────────────────────────────────────────────────────────
     const duracao = Date.now() - t0
     await supabase.from('sync_execucoes').update({
       status: 'ok',
+      avancou,
+      fila_restante: leitura.fila_restante,
       finalizado_em: new Date().toISOString(),
       emails_lidos: leitura.mensagens_examinadas,
       emails_aceitos: emailsAceitos,
@@ -246,6 +266,8 @@ export async function POST(request: NextRequest) {
       duplicados,
       motivos_descarte: motivos,
       interrompida_por_tempo: leitura.interrompida_por_tempo || interrompidaNaGravacao,
+      avancou,
+      fila_restante: leitura.fila_restante,
       ms_varredura: msVarredura,
       arquivados: arquivar.length,
       apagados_da_auditoria: limpeza.apagados,
@@ -271,6 +293,42 @@ export async function POST(request: NextRequest) {
 }
 
 /**
+ * Cria uma notificação quando a sincronização não avança há várias rodadas
+ * seguidas havendo fila. Só uma notificação por episódio: enquanto houver uma
+ * não lida do mesmo tipo, não insere outra — senão viraria uma a cada 15 min.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function alertarSeTravada(supabase: any, filaRestante: number): Promise<void> {
+  const { data: recentes } = await supabase
+    .from('sync_execucoes')
+    .select('avancou, fila_restante')
+    .eq('status', 'ok')
+    .order('iniciado_em', { ascending: false })
+    .limit(RODADAS_PARA_ALERTA)
+
+  const paradas = (recentes ?? []).filter(
+    (e: { avancou: boolean | null; fila_restante: number | null }) =>
+      e.avancou === false && (e.fila_restante ?? 0) > 0,
+  )
+  if (paradas.length < RODADAS_PARA_ALERTA) return
+
+  const { data: jaAvisado } = await supabase
+    .from('notificacoes')
+    .select('id')
+    .eq('tipo', 'sync_travada').eq('lida', false)
+    .limit(1)
+  if (jaAvisado && jaAvisado.length > 0) return
+
+  await supabase.from('notificacoes').insert({
+    tipo: 'sync_travada',
+    mensagem:
+      `Sincronização travada: ${RODADAS_PARA_ALERTA} rodadas seguidas sem avançar, ` +
+      `com ${filaRestante} email(s) na fila. Provável mensagem que a rotina não ` +
+      `consegue processar — ver o histórico no topo do dashboard.`,
+  })
+}
+
+/**
  * Situação das últimas rodadas — usado pelo dashboard para se atualizar.
  *
  * Exige sessão de admin (o navegador manda o cookie) ou o token do agendador.
@@ -286,8 +344,24 @@ export async function GET(request: NextRequest) {
   const supabase = getServerClient()
   const { data } = await supabase
     .from('sync_execucoes')
-    .select('iniciado_em, finalizado_em, status, emails_lidos, emails_aceitos, emails_descartados, nfes_salvas, duracao_ms')
+    .select('iniciado_em, finalizado_em, status, emails_lidos, emails_aceitos, emails_descartados, nfes_salvas, duracao_ms, avancou, fila_restante')
     .order('iniciado_em', { ascending: false })
     .limit(10)
-  return NextResponse.json({ execucoes: data ?? [] })
+
+  const execucoes = data ?? []
+  const ok = execucoes.filter((e: { status: string }) => e.status === 'ok')
+  const paradas = ok.slice(0, RODADAS_PARA_ALERTA).filter(
+    (e: { avancou: boolean | null; fila_restante: number | null }) =>
+      e.avancou === false && (e.fila_restante ?? 0) > 0,
+  )
+
+  return NextResponse.json({
+    execucoes,
+    saude: {
+      travada: paradas.length >= RODADAS_PARA_ALERTA,
+      rodadas_sem_avanco: paradas.length,
+      fila_restante: ok[0]?.fila_restante ?? 0,
+      ultima_com_erro: execucoes[0]?.status === 'erro',
+    },
+  })
 }

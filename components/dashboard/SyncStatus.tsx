@@ -29,6 +29,20 @@ interface Execucao {
   emails_descartados: number
   nfes_salvas: number
   duracao_ms: number | null
+  avancou: boolean | null
+  fila_restante: number | null
+}
+
+/**
+ * "Rodou e não tinha nada" e "rodou e não conseguiu avançar" produzem os mesmos
+ * contadores. A diferença está aqui — e é o que faltava quando a rotina ficou
+ * dois dias presa numa mensagem, retornando ok em todas as execuções.
+ */
+interface Saude {
+  travada: boolean
+  rodadas_sem_avanco: number
+  fila_restante: number
+  ultima_com_erro: boolean
 }
 
 function haQuantoTempo(iso: string): string {
@@ -43,6 +57,7 @@ function haQuantoTempo(iso: string): string {
 
 export default function SyncStatus({ onNovasNotas }: { onNovasNotas?: () => void }) {
   const [execucoes, setExecucoes] = useState<Execucao[] | null>(null)
+  const [saude, setSaude] = useState<Saude | null>(null)
   const [erroRede, setErroRede] = useState(false)
   const [expandido, setExpandido] = useState(false)
   // Total de notas já visto — a comparação detecta o que entrou desde a última
@@ -56,6 +71,7 @@ export default function SyncStatus({ onNovasNotas }: { onNovasNotas?: () => void
       const dados = await res.json()
       const lista: Execucao[] = dados.execucoes ?? []
       setExecucoes(lista)
+      setSaude(dados.saude ?? null)
       setErroRede(false)
 
       const total = lista.reduce((s, e) => s + (e.nfes_salvas ?? 0), 0)
@@ -89,10 +105,10 @@ export default function SyncStatus({ onNovasNotas }: { onNovasNotas?: () => void
       <div className="flex items-center justify-between gap-4 flex-wrap">
         <div className="flex items-center gap-3 min-w-0">
           <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${
-            erroRede ? 'bg-amber-500' : rodando ? 'bg-blue-600' : 'bg-[#0d1b2e]'}`}>
+            saude?.travada ? 'bg-red-600' : erroRede ? 'bg-amber-500' : rodando ? 'bg-blue-600' : 'bg-[#0d1b2e]'}`}>
             {rodando
               ? <RefreshCw className="w-5 h-5 text-white animate-spin" />
-              : erroRede
+              : (erroRede || saude?.travada)
                 ? <AlertTriangle className="w-5 h-5 text-white" />
                 : <CheckCircle2 className="w-5 h-5 text-white" />}
           </div>
@@ -106,6 +122,7 @@ export default function SyncStatus({ onNovasNotas }: { onNovasNotas?: () => void
             <p className="text-xs text-gray-400 truncate">
               armazenagem@xpslog.com.br · IMAP
               {ultima && <> · última verificação {haQuantoTempo(ultima.iniciado_em)}</>}
+              {!!saude?.fila_restante && <> · {saude.fila_restante} na fila</>}
             </p>
           </div>
         </div>
@@ -125,6 +142,21 @@ export default function SyncStatus({ onNovasNotas }: { onNovasNotas?: () => void
           )}
         </div>
       </div>
+
+      {saude?.travada && (
+        <div className="mt-3 rounded-xl bg-red-50 border border-red-200 p-3">
+          <p className="text-xs text-red-700 font-medium flex items-center gap-1.5">
+            <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+            Sincronização travada — {saude.rodadas_sem_avanco} rodadas seguidas sem avançar,
+            com {saude.fila_restante} email(s) esperando.
+          </p>
+          <p className="text-[11px] text-red-600/80 mt-1.5">
+            As execuções continuam terminando &quot;ok&quot;, mas nenhum email novo está sendo
+            lido. Normalmente é uma mensagem que a rotina não consegue processar.
+            Abra o histórico abaixo e veja se a coluna de emails lidos está parada.
+          </p>
+        </div>
+      )}
 
       {erroRede && (
         <p className="mt-3 text-xs text-amber-600 flex items-center gap-1.5">
@@ -157,6 +189,7 @@ export default function SyncStatus({ onNovasNotas }: { onNovasNotas?: () => void
                 <th className="font-medium pb-2 text-right">Lidos</th>
                 <th className="font-medium pb-2 text-right">Aceitos</th>
                 <th className="font-medium pb-2 text-right">Notas</th>
+                <th className="font-medium pb-2 text-right">Fila</th>
                 <th className="font-medium pb-2 text-right">Tempo</th>
               </tr>
             </thead>
@@ -174,6 +207,11 @@ export default function SyncStatus({ onNovasNotas }: { onNovasNotas?: () => void
                   <td className={`py-1.5 text-right tabular-nums ${e.nfes_salvas > 0 ? 'font-semibold text-[#0d1b2e]' : ''}`}>
                     {e.nfes_salvas}
                   </td>
+                  <td className={`py-1.5 text-right tabular-nums ${
+                    e.avancou === false && (e.fila_restante ?? 0) > 0 ? 'text-red-600 font-medium' : 'text-gray-400'}`}>
+                    {e.fila_restante ?? '—'}
+                    {e.avancou === false && (e.fila_restante ?? 0) > 0 && ' ⚠'}
+                  </td>
                   <td className="py-1.5 text-right tabular-nums text-gray-400">
                     {e.duracao_ms ? `${(e.duracao_ms / 1000).toFixed(1)}s` : '—'}
                   </td>
@@ -185,7 +223,8 @@ export default function SyncStatus({ onNovasNotas }: { onNovasNotas?: () => void
             <Inbox className="w-3.5 h-3.5 shrink-0 mt-px" />
             &quot;Lidos&quot; conta todo email examinado; &quot;aceitos&quot; são os que tinham NF-e de
             cliente cadastrado, com operação de entrada ou saída. O restante é
-            descartado sem gravar nada no banco.
+            descartado sem gravar nada no banco. &quot;Fila&quot; são os emails ainda não
+            examinados — marcado em vermelho quando a rodada não conseguiu avançar.
           </p>
         </div>
       )}

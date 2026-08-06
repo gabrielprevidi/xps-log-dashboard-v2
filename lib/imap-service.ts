@@ -84,6 +84,12 @@ export interface ResultadoLeitura {
   mensagens_examinadas: number
   /** true quando a varredura parou por tempo, não por falta de mensagens. */
   interrompida_por_tempo: boolean
+  /**
+   * Mensagens ainda não examinadas, somando todas as pastas. Calculado no
+   * mesmo STATUS que decide se a pasta precisa ser aberta, então não custa
+   * nada a mais. É o que permite distinguir "ocioso" de "travado".
+   */
+  fila_restante: number
   ignorados: Array<{ pasta: string; uid: number; assunto: string; motivo: string }>
 }
 
@@ -168,7 +174,8 @@ export async function lerEmailsNFeImap(opcoes: OpcoesLeitura = {}): Promise<Resu
 
   const resultado: ResultadoLeitura = {
     emails: [], estados: [], pastas_varridas: 0,
-    mensagens_examinadas: 0, interrompida_por_tempo: false, ignorados: [],
+    mensagens_examinadas: 0, interrompida_por_tempo: false,
+    fila_restante: 0, ignorados: [],
   }
 
   await client.connect()
@@ -190,10 +197,12 @@ export async function lerEmailsNFeImap(opcoes: OpcoesLeitura = {}): Promise<Resu
       // varrer 28 pastas custava 11,4s a cada 15 minutos, mesmo sem trabalho.
       try {
         const st = await client.status(box.path, { uidNext: true, uidValidity: true })
-        const semNovidade = marca
-          && Number(marca.uid_validity) === Number(st.uidValidity)
-          && Number(st.uidNext) - 1 <= Number(marca.ultimo_uid)
-        if (semNovidade) continue
+        const mesmaNumeracao = marca && Number(marca.uid_validity) === Number(st.uidValidity)
+        const pendentesAqui = mesmaNumeracao
+          ? Math.max(0, Number(st.uidNext) - 1 - Number(marca.ultimo_uid))
+          : 0
+        resultado.fila_restante += pendentesAqui
+        if (mesmaNumeracao && pendentesAqui === 0) continue
       } catch {
         continue // pasta inacessível — segue adiante
       }
