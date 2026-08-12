@@ -266,6 +266,14 @@ export async function POST(request: NextRequest) {
     }
     if (leitura.fila_restante > FILA_PARA_ALERTA) {
       await alertarFilaAcumulada(supabase, leitura.fila_restante)
+    } else if (avancou || leitura.fila_restante === 0) {
+      // Condição resolvida: baixa os alertas em aberto. Sem isto, um episódio
+      // já superado deixaria o sino aceso para sempre — e alerta que não some
+      // sozinho é alerta que as pessoas aprendem a ignorar.
+      await supabase.from('notificacoes')
+        .update({ lida: true })
+        .in('tipo', ['sync_travada', 'fila_acumulada'])
+        .eq('lida', false)
     }
 
     // ── 9. Fecha ────────────────────────────────────────────────────────
