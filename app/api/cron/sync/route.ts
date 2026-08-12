@@ -406,11 +406,31 @@ export async function GET(request: NextRequest) {
   const supabase = getServerClient()
   const { data } = await supabase
     .from('sync_execucoes')
-    .select('iniciado_em, finalizado_em, status, emails_lidos, emails_aceitos, emails_descartados, nfes_salvas, duracao_ms, avancou, fila_restante')
+    .select('iniciado_em, finalizado_em, status, gatilho, emails_lidos, emails_aceitos, emails_descartados, nfes_salvas, duracao_ms, avancou, fila_restante')
     .order('iniciado_em', { ascending: false })
-    .limit(10)
+    .limit(20)
 
   const execucoes = data ?? []
+
+  /**
+   * Intervalo real entre execuções, medido em vez de configurado.
+   *
+   * O rótulo era fixo em "15 min" e continuou dizendo isso depois de o
+   * agendador passar para 5 — número escrito à mão sempre acaba mentindo,
+   * porque a configuração vive fora daqui, no cron-job.org. A mediana dos
+   * intervalos recentes é imune a rodadas manuais no meio.
+   */
+  const doCron = execucoes
+    .filter((e: { gatilho?: string }) => e.gatilho === 'cron')
+    .map((e: { iniciado_em: string }) => new Date(e.iniciado_em).getTime())
+    .sort((a: number, b: number) => b - a)
+  const gaps: number[] = []
+  for (let i = 1; i < doCron.length; i++) {
+    const min = Math.round((doCron[i - 1] - doCron[i]) / 60_000)
+    if (min > 0) gaps.push(min)
+  }
+  gaps.sort((a, b) => a - b)
+  const intervaloMin = gaps.length ? gaps[Math.floor(gaps.length / 2)] : null
   const ok = execucoes.filter((e: { status: string }) => e.status === 'ok')
   const paradas = ok.slice(0, RODADAS_PARA_ALERTA).filter(
     (e: { avancou: boolean | null; fila_restante: number | null }) =>
@@ -418,7 +438,8 @@ export async function GET(request: NextRequest) {
   )
 
   return NextResponse.json({
-    execucoes,
+    execucoes: execucoes.slice(0, 10),
+    intervalo_min: intervaloMin,
     saude: {
       travada: paradas.length >= RODADAS_PARA_ALERTA,
       rodadas_sem_avanco: paradas.length,

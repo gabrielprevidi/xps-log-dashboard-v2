@@ -58,6 +58,8 @@ function haQuantoTempo(iso: string): string {
 export default function SyncStatus({ onNovasNotas }: { onNovasNotas?: () => void }) {
   const [execucoes, setExecucoes] = useState<Execucao[] | null>(null)
   const [saude, setSaude] = useState<Saude | null>(null)
+  /** Medido a partir das execuções, não configurado — ver a rota GET. */
+  const [intervaloMin, setIntervaloMin] = useState<number | null>(null)
   const [erroRede, setErroRede] = useState(false)
   const [sincronizando, setSincronizando] = useState(false)
   const [resultadoManual, setResultadoManual] = useState<string | null>(null)
@@ -79,6 +81,7 @@ export default function SyncStatus({ onNovasNotas }: { onNovasNotas?: () => void
       const lista: Execucao[] = dados.execucoes ?? []
       setExecucoes(lista)
       setSaude(dados.saude ?? null)
+      setIntervaloMin(dados.intervalo_min ?? null)
       setErroRede(false)
 
       const total = lista.reduce((s, e) => s + (e.nfes_salvas ?? 0), 0)
@@ -196,9 +199,14 @@ export default function SyncStatus({ onNovasNotas }: { onNovasNotas?: () => void
           <div className="min-w-0">
             <h2 className="font-semibold text-[#0d1b2e] flex items-center gap-2">
               Sincronização automática
-              <span className="text-[10px] font-medium uppercase tracking-wide px-1.5 py-0.5 rounded bg-gray-100 text-gray-500">
-                a cada 15 min
-              </span>
+              {intervaloMin !== null && (
+                <span
+                  title="Medido a partir das execuções reais, não de uma configuração fixa"
+                  className="text-[10px] font-medium uppercase tracking-wide px-1.5 py-0.5 rounded bg-gray-100 text-gray-500"
+                >
+                  a cada {intervaloMin} min
+                </span>
+              )}
             </h2>
             <p className="text-xs text-gray-400 truncate">
               armazenagem@xpslog.com.br · IMAP
