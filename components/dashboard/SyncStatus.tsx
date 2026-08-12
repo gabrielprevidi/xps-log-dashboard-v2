@@ -16,7 +16,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { RefreshCw, CheckCircle2, AlertTriangle, Clock, Inbox, Play } from 'lucide-react'
+import { RefreshCw, CheckCircle2, AlertTriangle, Clock, Inbox, Play, Square } from 'lucide-react'
 
 const INTERVALO_MS = 30_000
 
@@ -61,6 +61,11 @@ export default function SyncStatus({ onNovasNotas }: { onNovasNotas?: () => void
   const [erroRede, setErroRede] = useState(false)
   const [sincronizando, setSincronizando] = useState(false)
   const [resultadoManual, setResultadoManual] = useState<string | null>(null)
+  const [progresso, setProgresso] = useState<{
+    rodadas: number; examinadas: number; notas: number; fila: number | null
+  } | null>(null)
+  /** Sinal de cancelamento — ref para o laço enxergar a mudança na hora. */
+  const cancelarRef = useRef(false)
   const [expandido, setExpandido] = useState(false)
   // Total de notas já visto — a comparação detecta o que entrou desde a última
   // consulta. Ref (não estado) para não reexecutar o efeito a cada mudança.
@@ -87,37 +92,76 @@ export default function SyncStatus({ onNovasNotas }: { onNovasNotas?: () => void
   }, [onNovasNotas])
 
   /**
-   * Dispara uma rodada agora, sem esperar os 15 minutos. Serve para quando uma
-   * rodada falhou ou quando se acabou de receber uma nota e não se quer esperar.
-   * Usa a mesma rota do agendador — autenticada pela sessão de admin.
+   * Esvazia a fila: encadeia rodadas até não sobrar email por examinar.
+   *
+   * Cada chamada é uma rodada normal e limitada — o encadeamento acontece aqui,
+   * no navegador, porque uma função da Vercel tem 60 segundos e a fila pode ter
+   * centenas de mensagens. Assim nenhum email fica para trás mesmo quando o
+   * agendador não deu conta (falhou, foi desativado, ou o volume superou a
+   * vazão de uma rodada a cada 15 minutos).
+   *
+   * Para sozinho quando: a fila zera, o usuário cancela, ou duas rodadas
+   * seguidas não avançam (sinal de mensagem problemática — insistir só gastaria
+   * tempo, e o alerta de travamento já cobre esse caso).
    */
-  const sincronizarAgora = useCallback(async () => {
+  const drenarFila = useCallback(async () => {
+    cancelarRef.current = false
     setSincronizando(true)
     setResultadoManual(null)
+    setProgresso({ rodadas: 0, examinadas: 0, notas: 0, fila: null })
+
+    const MAX_RODADAS = 300          // teto de segurança
+    const MAX_SEM_AVANCO = 2
+    let rodadas = 0, examinadas = 0, notas = 0, semAvanco = 0
+    let fila: number | null = null
+    let motivoParada = 'fila zerada'
+
     try {
-      const res = await fetch('/api/cron/sync', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ gatilho: 'manual' }),
-      })
-      const d = await res.json().catch(() => ({}))
-      if (res.status === 409) {
-        setResultadoManual('Já há uma rodada em andamento — aguarde ela terminar.')
-      } else if (!res.ok) {
-        setResultadoManual(`Falhou: ${d.detalhe ?? d.error ?? res.status}`)
-      } else {
-        const notas = d.nfes_salvas ?? 0
-        setResultadoManual(
-          `${d.mensagens_examinadas ?? 0} email(s) examinado(s), ${notas} nota(s) gravada(s)` +
-          (d.fila_restante ? ` · ${d.fila_restante} ainda na fila` : ' · fila zerada'),
-        )
-        if (notas > 0) onNovasNotas?.()
+      while (rodadas < MAX_RODADAS) {
+        if (cancelarRef.current) { motivoParada = 'cancelado'; break }
+
+        const res = await fetch('/api/cron/sync', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ gatilho: 'manual' }),
+        })
+
+        // 409 = o agendador está no meio de uma rodada. Espera e tenta de novo.
+        if (res.status === 409) {
+          await new Promise(r => setTimeout(r, 4000))
+          continue
+        }
+        if (!res.ok) {
+          const d = await res.json().catch(() => ({}))
+          motivoParada = `erro: ${d.detalhe ?? d.error ?? res.status}`
+          break
+        }
+
+        const d = await res.json()
+        rodadas++
+        examinadas += d.mensagens_examinadas ?? 0
+        notas += d.nfes_salvas ?? 0
+        fila = d.fila_restante ?? null
+        setProgresso({ rodadas, examinadas, notas, fila })
+        if (d.nfes_salvas > 0) onNovasNotas?.()
+
+        if (fila === 0) { motivoParada = 'fila zerada'; break }
+        if (d.avancou === false) {
+          if (++semAvanco >= MAX_SEM_AVANCO) { motivoParada = 'a fila parou de avançar'; break }
+        } else semAvanco = 0
       }
-      await consultar()
+      if (rodadas >= MAX_RODADAS) motivoParada = `teto de ${MAX_RODADAS} rodadas`
     } catch (e) {
-      setResultadoManual(`Falhou: ${e instanceof Error ? e.message : String(e)}`)
+      motivoParada = `erro: ${e instanceof Error ? e.message : String(e)}`
     } finally {
+      setResultadoManual(
+        `${rodadas} rodada(s) · ${examinadas} email(s) examinado(s) · ${notas} nota(s) gravada(s)` +
+        (fila !== null ? ` · ${fila === 0 ? 'fila zerada' : `${fila} ainda na fila`}` : '') +
+        ` — ${motivoParada}`,
+      )
+      setProgresso(null)
       setSincronizando(false)
+      await consultar()
     }
   }, [consultar, onNovasNotas])
 
@@ -169,17 +213,26 @@ export default function SyncStatus({ onNovasNotas }: { onNovasNotas?: () => void
             <div className="text-lg font-semibold text-[#0d1b2e] leading-none">{notas24h}</div>
             <div className="text-[11px] text-gray-400 mt-1">notas em 24h</div>
           </div>
-          <button
-            onClick={sincronizarAgora}
-            disabled={sincronizando || rodando}
-            title="Dispara uma rodada agora, sem esperar os 15 minutos"
-            className="flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-lg border border-gray-200
-                       text-[#0d1b2e] hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition"
-          >
-            {sincronizando
-              ? <><RefreshCw className="w-3.5 h-3.5 animate-spin" /> sincronizando…</>
-              : <><Play className="w-3.5 h-3.5" /> Sincronizar agora</>}
-          </button>
+          {sincronizando ? (
+            <button
+              onClick={() => { cancelarRef.current = true }}
+              title="Interrompe após a rodada atual terminar"
+              className="flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-lg border border-red-200
+                         text-red-700 hover:bg-red-50 transition"
+            >
+              <Square className="w-3.5 h-3.5" /> parar
+            </button>
+          ) : (
+            <button
+              onClick={drenarFila}
+              disabled={rodando}
+              title="Processa todos os emails da fila, encadeando rodadas até esvaziar"
+              className="flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-lg border border-gray-200
+                         text-[#0d1b2e] hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition"
+            >
+              <Play className="w-3.5 h-3.5" /> Sincronizar fila
+            </button>
+          )}
           {execucoes && execucoes.length > 0 && (
             <button
               onClick={() => setExpandido(v => !v)}
@@ -202,6 +255,21 @@ export default function SyncStatus({ onNovasNotas }: { onNovasNotas?: () => void
             As execuções continuam terminando &quot;ok&quot;, mas nenhum email novo está sendo
             lido. Normalmente é uma mensagem que a rotina não consegue processar.
             Abra o histórico abaixo e veja se a coluna de emails lidos está parada.
+          </p>
+        </div>
+      )}
+
+      {progresso && (
+        <div className="mt-3 rounded-xl bg-blue-50 border border-blue-200 p-3">
+          <p className="text-xs text-blue-800 font-medium flex items-center gap-1.5">
+            <RefreshCw className="w-3.5 h-3.5 shrink-0 animate-spin" />
+            Esvaziando a fila — rodada {progresso.rodadas} · {progresso.examinadas} email(s)
+            examinado(s) · {progresso.notas} nota(s) gravada(s)
+            {progresso.fila !== null && <> · {progresso.fila} restante(s)</>}
+          </p>
+          <p className="text-[11px] text-blue-700/70 mt-1.5">
+            Pode deixar rodando; o agendador continua funcionando em paralelo. Fechar
+            esta página interrompe o encadeamento, mas nada do que já foi gravado se perde.
           </p>
         </div>
       )}
