@@ -244,6 +244,22 @@ export default function SyncStatus({ onNovasNotas }: { onNovasNotas?: () => void
         </div>
       </div>
 
+      {/* Fila acumulada: a rotina funciona, mas há notas esperando. Distinto do
+          travamento — aqui a ação é clicar em "Sincronizar fila". */}
+      {!saude?.travada && !sincronizando && (saude?.fila_restante ?? 0) > 0 && (
+        <div className="mt-3 rounded-xl bg-amber-50 border border-amber-200 p-3">
+          <p className="text-xs text-amber-800 font-medium flex items-center gap-1.5">
+            <Inbox className="w-3.5 h-3.5 shrink-0" />
+            {saude!.fila_restante} email(s) na fila aguardando leitura.
+          </p>
+          <p className="text-[11px] text-amber-700/80 mt-1.5">
+            A sincronização automática vai processá-los aos poucos. Para esvaziar
+            agora — por exemplo depois de uma rodada que falhou por tempo esgotado —
+            clique em <strong>Sincronizar fila</strong> acima.
+          </p>
+        </div>
+      )}
+
       {saude?.travada && (
         <div className="mt-3 rounded-xl bg-red-50 border border-red-200 p-3">
           <p className="text-xs text-red-700 font-medium flex items-center gap-1.5">

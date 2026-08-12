@@ -39,6 +39,14 @@ const LOCK_TIMEOUT_MIN = 20
  */
 const RODADAS_PARA_ALERTA = 3
 
+/**
+ * Fila acima disto vira notificação: há notas esperando que a rodada de 15 em
+ * 15 minutos não vai alcançar tão cedo. Diferente do alerta de travamento —
+ * aqui a rotina funciona, só não dá conta do volume (ou vinha de um timeout,
+ * que mata a rodada sem processar nada).
+ */
+const FILA_PARA_ALERTA = Number(process.env.FILA_PARA_ALERTA || 40)
+
 function autorizado(request: NextRequest): boolean {
   const esperado = process.env.CRON_SECRET
   if (!esperado) return false
@@ -256,6 +264,9 @@ export async function POST(request: NextRequest) {
     if (!avancou && leitura.fila_restante > 0) {
       await alertarSeTravada(supabase, leitura.fila_restante)
     }
+    if (leitura.fila_restante > FILA_PARA_ALERTA) {
+      await alertarFilaAcumulada(supabase, leitura.fila_restante)
+    }
 
     // ── 9. Fecha ────────────────────────────────────────────────────────
     const duracao = Date.now() - t0
@@ -344,6 +355,30 @@ async function alertarSeTravada(supabase: any, filaRestante: number): Promise<vo
       `Sincronização travada: ${RODADAS_PARA_ALERTA} rodadas seguidas sem avançar, ` +
       `com ${filaRestante} email(s) na fila. Provável mensagem que a rotina não ` +
       `consegue processar — ver o histórico no topo do dashboard.`,
+  })
+}
+
+/**
+ * Avisa que há notas na fila esperando sincronização.
+ *
+ * Dispara quando a fila passa do limiar — o que acontece por volume ou depois
+ * de rodadas mortas por timeout, que não processam nada e deixam tudo
+ * acumulado. Uma notificação por episódio: enquanto houver uma não lida do
+ * mesmo tipo, não insere outra.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function alertarFilaAcumulada(supabase: any, filaRestante: number): Promise<void> {
+  const { data: jaAvisado } = await supabase
+    .from('notificacoes')
+    .select('id').eq('tipo', 'fila_acumulada').eq('lida', false).limit(1)
+  if (jaAvisado && jaAvisado.length > 0) return
+
+  await supabase.from('notificacoes').insert({
+    tipo: 'fila_acumulada',
+    mensagem:
+      `${filaRestante} email(s) aguardando leitura. A sincronização automática ` +
+      `está processando, mas o acúmulo passou de ${FILA_PARA_ALERTA}. ` +
+      `Use "Sincronizar fila" na página de NF-es para esvaziar de uma vez.`,
   })
 }
 
