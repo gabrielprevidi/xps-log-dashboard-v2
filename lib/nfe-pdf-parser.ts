@@ -238,6 +238,42 @@ function parseTextoNFe(texto: string): DadosNFe | null {
         data_emissao = `${dataAntesDoRotulo[3]}-${dataAntesDoRotulo[2]}-${dataAntesDoRotulo[1]}`
       }
     }
+    if (!data_emissao) {
+      // Fallback: DANFEs da AVERY colam os rótulos numa linha e os valores em
+      // outra ("NOME/RAZÃO SOCIALCNPJ/CPFDATA DA EMISSÃO" e, adiante,
+      // "XPS LOG LTDA - FILIAL VINHEDO32.771.162/0004-6213/08/2026"). Nenhum
+      // dos padrões acima casa, e o campo ficava vazio: 145 das 307
+      // movimentações da Avery entraram sem data. A data colada logo após o
+      // CNPJ do destinatário é a DATA DA EMISSÃO — mesma ancoragem já usada
+      // para o CNPJ do destinatário mais abaixo.
+      const dataColadaAoCnpj = texto.match(
+        /\d{2}\.\d{3}\.\d{3}\/\d{4}-\d{2}(\d{2})\/(\d{2})\/(\d{4})/
+      )
+      if (dataColadaAoCnpj) {
+        data_emissao = `${dataColadaAoCnpj[3]}-${dataColadaAoCnpj[2]}-${dataColadaAoCnpj[1]}`
+      }
+    }
+    if (!data_emissao) {
+      // Fallback: mesmo layout de rótulos colados, mas destinatário sem CNPJ
+      // (exportação — "JIANGXI HESHUOFENG NEW MATERIAL CO. LTD11/08/2026").
+      // Sem âncora de CNPJ, pega a primeira data depois do rótulo. A janela é
+      // larga porque entre rótulo e valor há as outras linhas de rótulo.
+      const dataAposRotulo = texto.match(
+        /DATA D[AE] EMISS[AÃ]O[\s\S]{0,400}?(\d{2})\/(\d{2})\/(\d{4})/
+      )
+      if (dataAposRotulo) {
+        data_emissao = `${dataAposRotulo[3]}-${dataAposRotulo[2]}-${dataAposRotulo[1]}`
+      }
+    }
+    if (!data_emissao) {
+      // Último recurso: a linha do protocolo de autorização, no formato padrão
+      // "135263303957072 13/08/2026 11:14:27" (15 dígitos + data + hora). Vale
+      // quando o rótulo do protocolo está longe do valor, fora da janela do
+      // fallback acima. É a data de AUTORIZAÇÃO — coincide com a emissão salvo
+      // em notas emitidas na virada do dia.
+      const protLinha = texto.match(/\b\d{15}\s+(\d{2})\/(\d{2})\/(\d{4})\s+\d{2}:\d{2}:\d{2}/)
+      if (protLinha) data_emissao = `${protLinha[3]}-${protLinha[2]}-${protLinha[1]}`
+    }
 
     // --- Destinatário ---
     // Vários layouts de DANFE; tenta do mais específico/confiável ao mais genérico.
