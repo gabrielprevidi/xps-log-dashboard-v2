@@ -1674,6 +1674,8 @@ export async function criarMovimentacaoManual(dados: {
   pallets_entrada?: number | null
   pallets_saida?: number | null
   valor_manuseio?: number | null
+  produto_id?: string | null
+  produto_nome?: string | null
 }) {
   const supabase = getServerClient()
   const { data, error } = await supabase

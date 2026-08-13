@@ -32,6 +32,7 @@ interface Movimentacao {
   cliente_destino: string | null
   valor_manuseio: number | null
   cancelada: boolean | null
+  produto_id: string | null
   produto_nome: string | null
   observacoes: string | null
   regra_fator_pallet: number | null
@@ -85,13 +86,14 @@ interface MovForm {
   data: string
   numero_nfe: string
   contraparte: string
+  produto_id: string
   pallets: string
   toneladas: string
   valor_manuseio: string
 }
 
 const MOV_FORM_VAZIO: MovForm = {
-  tipo: 'entrada', data: '', numero_nfe: '', contraparte: '',
+  tipo: 'entrada', data: '', numero_nfe: '', contraparte: '', produto_id: '',
   pallets: '', toneladas: '', valor_manuseio: '4.50',
 }
 
@@ -162,17 +164,27 @@ function movToForm(mov: Movimentacao): MovForm {
     contraparte: (mov.tipo_movimentacao === 'entrada'
       ? (mov.fornecedor || mov.arquivos_nfe?.nome_emitente)
       : (mov.cliente_destino || mov.arquivos_nfe?.nome_destinatario)) || '',
+    produto_id: mov.produto_id || '',
     pallets: String(mov.pallets_entrada || mov.pallets_saida || ''),
     toneladas: String(mov.qtd_entrada_ton || mov.qtd_saida_ton || ''),
     valor_manuseio: String(mov.valor_manuseio ?? '4.50'),
   }
 }
 
-function formToPayload(form: MovForm, clienteId: string) {
+function formToPayload(form: MovForm, clienteId: string, produtos: ClienteProdutoSimples[]) {
   const pallets = parseInt(form.pallets) || 0
   const ton = parseFloat(form.toneladas) || null
   const vm = parseFloat(form.valor_manuseio) || null
+  // Só mexe na categoria quando o cliente tem produtos cadastrados (ex.: Fedrigoni).
+  // Nos demais, produto_nome pode ter vindo da descrição do item da NF-e — não sobrescrever.
+  const produto = produtos.length > 0
+    ? {
+        produto_id: form.produto_id || null,
+        produto_nome: produtos.find(p => p.id === form.produto_id)?.nome ?? null,
+      }
+    : {}
   return {
+    ...produto,
     cliente_id: clienteId,
     tipo_movimentacao: form.tipo,
     numero_nfe: form.numero_nfe || null,
@@ -193,12 +205,17 @@ function formToPayload(form: MovForm, clienteId: string) {
 // outro componente faz o React tratá-los como um tipo novo a cada render,
 // desmontando o <tr>/<input> inteiro a cada tecla digitada (o input perde o
 // foco e cada caractere exige clicar no campo de novo).
-function MovFormRow({ f, setF, onSave, onCancel, saving }: {
+function MovFormRow({ f, setF, onSave, onCancel, saving, produtos, temColunaFator }: {
   f: MovForm
   setF: (v: MovForm) => void
   onSave: () => void
   onCancel: () => void
   saving: boolean
+  // Produtos cadastrados do cliente: quando existem, a tabela tem a coluna
+  // "Produto" e a linha do formulário precisa da célula correspondente.
+  produtos: ClienteProdutoSimples[]
+  // Idem para a coluna "Fator" (clientes com separação por sacaria).
+  temColunaFator: boolean
 }) {
   return (
     <tr className="bg-blue-50/50 border-y border-blue-200">
@@ -238,6 +255,20 @@ function MovFormRow({ f, setF, onSave, onCancel, saving }: {
           className="w-36 border border-gray-200 rounded-lg px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-blue-400"
         />
       </td>
+      {produtos.length > 0 && (
+        <td className="px-2 py-2">
+          <select
+            value={f.produto_id}
+            onChange={e => setF({ ...f, produto_id: e.target.value })}
+            className="w-36 border border-gray-200 rounded-lg px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-blue-400"
+          >
+            <option value="">Sem categoria</option>
+            {produtos.map(p => (
+              <option key={p.id} value={p.id}>{p.nome}</option>
+            ))}
+          </select>
+        </td>
+      )}
       <td className="px-2 py-2">
         <input
           type="number"
@@ -248,6 +279,7 @@ function MovFormRow({ f, setF, onSave, onCancel, saving }: {
           className="w-20 border border-gray-200 rounded-lg px-2 py-1 text-xs text-right focus:outline-none focus:ring-2 focus:ring-blue-400"
         />
       </td>
+      {temColunaFator && <td className="px-2 py-2" />}
       <td className="px-2 py-2">
         <input
           type="number"
@@ -1003,7 +1035,7 @@ export default function ClienteDetailPage() {
   async function salvarEditMov(movId: string) {
     setSalvandoMovId(movId)
     try {
-      const payload = formToPayload(editMovForm, id)
+      const payload = formToPayload(editMovForm, id, clienteProdutos)
       const res = await fetch(`/api/movimentacoes/${movId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
@@ -1023,7 +1055,7 @@ export default function ClienteDetailPage() {
   async function salvarNovaMov() {
     setSalvandoNovaMov(true)
     try {
-      const payload = formToPayload(novaMovForm, id)
+      const payload = formToPayload(novaMovForm, id, clienteProdutos)
       const res = await fetch('/api/movimentacoes', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1702,6 +1734,8 @@ export default function ClienteDetailPage() {
                         onSave={() => salvarEditMov(mov.id)}
                         onCancel={() => setEditandoMovId(null)}
                         saving={salvandoMovId === mov.id}
+                        produtos={clienteProdutos}
+                        temColunaFator={!!cliente?.cobrar_separacao_sacaria}
                       />
                     )
                   }
@@ -1799,6 +1833,8 @@ export default function ClienteDetailPage() {
                     onSave={salvarNovaMov}
                     onCancel={() => setAdicionandoMov(false)}
                     saving={salvandoNovaMov}
+                    produtos={clienteProdutos}
+                    temColunaFator={!!cliente?.cobrar_separacao_sacaria}
                   />
                 )}
               </tbody>
