@@ -353,13 +353,18 @@ export default function ClienteDetailPage() {
 
   // edição de linha de excedente (virtual → movimento real)
   const [editandoExcedente, setEditandoExcedente] = useState<string | null>(null) // parentMovId
-  const [editExcForm, setEditExcForm] = useState({ ton: '', contraparte: '' })
+  const [editExcForm, setEditExcForm] = useState({ data: '', ton: '', contraparte: '' })
   const [salvandoExcedente, setSalvandoExcedente] = useState(false)
 
   // nova linha manual na seção Separação por Unidade de Sacaria
   const [adicionandoSeparacao, setAdicionandoSeparacao] = useState(false)
   const [novaSepForm, setNovaSepForm] = useState({ data: '', numero_nfe: '', tipo: 'saida' as 'entrada' | 'saida', contraparte: '', toneladas: '' })
   const [salvandoSep, setSalvandoSep] = useState(false)
+
+  // edição inline de linha da Separação por Unidade de Sacaria
+  const [editandoSepId, setEditandoSepId] = useState<string | null>(null)
+  const [editSepForm, setEditSepForm] = useState({ data: '', numero_nfe: '', contraparte: '', toneladas: '' })
+  const [salvandoSepEdit, setSalvandoSepEdit] = useState(false)
 
   // limpar dados do cliente
   const [confirmandoLimpeza, setConfirmandoLimpeza] = useState(false)
@@ -708,6 +713,61 @@ export default function ClienteDetailPage() {
     }
   }
 
+  // Edita uma linha existente da Separação por Unidade de Sacaria (data, NF-e,
+  // contraparte e tonelagem). Mantém tipo e valor_manuseio da movimentação original.
+  function iniciarEditSeparacao(mov: Movimentacao) {
+    setEditandoSepId(mov.id)
+    setEditSepForm({
+      data: (mov.data_entrada || mov.data_saida || '').slice(0, 10),
+      numero_nfe: mov.numero_nfe || '',
+      contraparte: (mov.tipo_movimentacao === 'entrada'
+        ? (mov.fornecedor || mov.arquivos_nfe?.nome_emitente)
+        : (mov.cliente_destino || mov.arquivos_nfe?.nome_destinatario)) || '',
+      toneladas: String(mov.qtd_entrada_ton ?? mov.qtd_saida_ton ?? ''),
+    })
+  }
+
+  async function salvarEditSeparacao(movId: string) {
+    const mov = todasMovs.find(m => m.id === movId)
+    if (!mov) return
+    const ton = parseFloat(editSepForm.toneladas.replace(',', '.'))
+    if (!editSepForm.data || isNaN(ton) || ton <= 0) {
+      alert('Preencha a data e uma tonelagem válida.')
+      return
+    }
+    const tipo = mov.tipo_movimentacao
+    setSalvandoSepEdit(true)
+    try {
+      const payload = {
+        cliente_id: id,
+        tipo_movimentacao: tipo,
+        numero_nfe: editSepForm.numero_nfe || null,
+        fornecedor: tipo === 'entrada' ? (editSepForm.contraparte || null) : null,
+        cliente_destino: tipo === 'saida' ? (editSepForm.contraparte || null) : null,
+        data_entrada: tipo === 'entrada' ? editSepForm.data : null,
+        data_saida: tipo === 'saida' ? editSepForm.data : null,
+        qtd_entrada_ton: tipo === 'entrada' ? ton : null,
+        qtd_saida_ton: tipo === 'saida' ? ton : null,
+        pallets_entrada: tipo === 'entrada' ? calcularPallets(ton, getMovFatorDB(mov)) : null,
+        pallets_saida: tipo === 'saida' ? calcularPallets(ton, getMovFatorDB(mov)) : null,
+        valor_manuseio: mov.valor_manuseio ?? 0,
+      }
+      const res = await fetch(`/api/movimentacoes/${movId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      })
+      const data = await res.json()
+      if (data.error) throw new Error(data.error)
+      setTodasMovs(prev => prev.map(m => m.id === movId ? { ...m, ...data } : m))
+      setEditandoSepId(null)
+    } catch (e: any) {
+      alert('Erro ao salvar: ' + e.message)
+    } finally {
+      setSalvandoSepEdit(false)
+    }
+  }
+
   // Salva excedente virtual como movimento real e marca o pai como dismissido
   async function salvarExcedente(parentMovId: string) {
     const exc = excessosSeparacao.find(e => e.movId === parentMovId)
@@ -724,8 +784,8 @@ export default function ClienteDetailPage() {
         numero_nfe: exc.nfe,
         fornecedor: parentMov.tipo_movimentacao === 'entrada' ? (editExcForm.contraparte || exc.contraparte) : null,
         cliente_destino: parentMov.tipo_movimentacao === 'saida' ? (editExcForm.contraparte || exc.contraparte) : null,
-        data_entrada: parentMov.tipo_movimentacao === 'entrada' ? exc.data : null,
-        data_saida: parentMov.tipo_movimentacao === 'saida' ? exc.data : null,
+        data_entrada: parentMov.tipo_movimentacao === 'entrada' ? (editExcForm.data || exc.data) : null,
+        data_saida: parentMov.tipo_movimentacao === 'saida' ? (editExcForm.data || exc.data) : null,
         qtd_entrada_ton: parentMov.tipo_movimentacao === 'entrada' ? ton : null,
         qtd_saida_ton: parentMov.tipo_movimentacao === 'saida' ? ton : null,
         pallets_entrada: parentMov.tipo_movimentacao === 'entrada' ? calcularPallets(ton) : null,
@@ -1785,7 +1845,7 @@ export default function ClienteDetailPage() {
                   <th className="px-4 py-3 text-right">Volume (un)</th>
                   <th className="px-4 py-3 text-right">Total</th>
                   <th className="px-4 py-3 text-center w-24">+ Pallet</th>
-                  {podeEditarMovs && <th className="px-4 py-3 w-12" />}
+                  {podeEditarMovs && <th className="px-4 py-3 w-24" />}
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-50">
@@ -1797,6 +1857,65 @@ export default function ClienteDetailPage() {
                   const contraparte = mov.tipo_movimentacao === 'entrada'
                     ? (mov.fornecedor || mov.arquivos_nfe?.nome_emitente || '—')
                     : (mov.cliente_destino || mov.arquivos_nfe?.nome_destinatario || '—')
+
+                  if (editandoSepId === mov.id) {
+                    const tonEdit = parseFloat(editSepForm.toneladas.replace(',', '.'))
+                    const volEdit = !isNaN(tonEdit) ? Math.round(tonEdit * 1000 / 25 * 100) / 100 : 0
+                    return (
+                      <tr key={mov.id} className="bg-amber-50/60 border-y border-amber-200">
+                        <td className="px-2 py-2">
+                          <input type="date" value={editSepForm.data}
+                            onChange={e => setEditSepForm(f => ({ ...f, data: e.target.value }))}
+                            className="w-32 border border-gray-200 rounded-lg px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-amber-400" />
+                        </td>
+                        <td className="px-2 py-2">
+                          <input type="text" placeholder="NF#" value={editSepForm.numero_nfe}
+                            onChange={e => setEditSepForm(f => ({ ...f, numero_nfe: e.target.value }))}
+                            className="w-20 border border-gray-200 rounded-lg px-2 py-1 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-amber-400" />
+                        </td>
+                        <td className="px-2 py-2">
+                          <input type="text" placeholder="Fornecedor / Destino" value={editSepForm.contraparte}
+                            onChange={e => setEditSepForm(f => ({ ...f, contraparte: e.target.value }))}
+                            className="w-36 border border-gray-200 rounded-lg px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-amber-400" />
+                        </td>
+                        {temCategorias && (
+                          <td className="px-2 py-2">
+                            {mov.produto_nome
+                              ? <span className="text-xs bg-indigo-50 text-indigo-700 border border-indigo-100 px-2 py-0.5 rounded-full font-medium">{mov.produto_nome}</span>
+                              : <span className="text-xs text-gray-300">—</span>}
+                          </td>
+                        )}
+                        <td className="px-2 py-2 text-right">
+                          <input type="number" step="0.001" min="0.001" placeholder="0.000" value={editSepForm.toneladas}
+                            onChange={e => setEditSepForm(f => ({ ...f, toneladas: e.target.value }))}
+                            className="w-20 border border-gray-200 rounded-lg px-2 py-1 text-xs text-right focus:outline-none focus:ring-2 focus:ring-amber-400" />
+                        </td>
+                        <td className="px-2 py-2 text-right text-xs text-gray-400">{getMovFatorDB(mov).toFixed(1)}</td>
+                        <td className="px-2 py-2 text-right text-xs font-bold text-amber-700">
+                          {volEdit > 0 ? volEdit.toFixed(2) : '—'}
+                        </td>
+                        <td className="px-2 py-2 text-right text-xs font-semibold text-[#0d1b2e]">
+                          {volEdit > 0 ? formatarMoeda(volEdit * 4.5) : '—'}
+                        </td>
+                        <td className="px-2 py-2" />
+                        {podeEditarMovs && (
+                          <td className="px-2 py-2 text-center">
+                            <div className="flex items-center justify-center gap-1">
+                              <button onClick={() => salvarEditSeparacao(mov.id)} disabled={salvandoSepEdit}
+                                className="p-1.5 rounded-lg bg-amber-500 text-white hover:bg-amber-600 disabled:opacity-50" title="Salvar">
+                                {salvandoSepEdit ? <Loader2 size={12} className="animate-spin" /> : <Save size={12} />}
+                              </button>
+                              <button onClick={() => setEditandoSepId(null)}
+                                className="p-1.5 rounded-lg border border-gray-200 text-gray-500 hover:bg-gray-100" title="Cancelar">
+                                <X size={12} />
+                              </button>
+                            </div>
+                          </td>
+                        )}
+                      </tr>
+                    )
+                  }
+
                   return (
                     <tr key={mov.id} className="hover:bg-amber-50/40">
                       <td className="px-4 py-3 text-gray-600">
@@ -1863,13 +1982,22 @@ export default function ClienteDetailPage() {
                       </td>
                       {podeEditarMovs && (
                         <td className="px-4 py-3 text-center">
-                          <button
-                            onClick={() => cancelarMovimentacao(mov.id)}
-                            className="p-1.5 rounded-lg border border-gray-200 text-gray-400 hover:border-red-400 hover:text-red-600 transition-colors"
-                            title="Excluir linha"
-                          >
-                            <Trash2 size={12} />
-                          </button>
+                          <div className="flex items-center justify-center gap-1">
+                            <button
+                              onClick={() => iniciarEditSeparacao(mov)}
+                              className="p-1.5 rounded-lg border border-gray-200 text-gray-400 hover:border-amber-400 hover:text-amber-600 transition-colors"
+                              title="Editar linha (data, NF-e, destino e tonelagem)"
+                            >
+                              <Pencil size={12} />
+                            </button>
+                            <button
+                              onClick={() => cancelarMovimentacao(mov.id)}
+                              className="p-1.5 rounded-lg border border-gray-200 text-gray-400 hover:border-red-400 hover:text-red-600 transition-colors"
+                              title="Excluir linha"
+                            >
+                              <Trash2 size={12} />
+                            </button>
+                          </div>
                         </td>
                       )}
                     </tr>
@@ -1887,8 +2015,11 @@ export default function ClienteDetailPage() {
                     const volPreview = !isNaN(tonPreview) ? Math.round(tonPreview * 1000 / 25 * 100) / 100 : 0
                     return (
                       <tr key={`exc-${exc.movId}`} className="bg-orange-50/60 border-y border-orange-200">
-                        <td className="px-2 py-2 text-xs text-gray-500">
-                          {exc.data ? new Date(exc.data + 'T12:00:00').toLocaleDateString('pt-BR') : '—'}
+                        <td className="px-2 py-2">
+                          <input type="date"
+                            value={editExcForm.data}
+                            onChange={e => setEditExcForm(f => ({ ...f, data: e.target.value }))}
+                            className="w-32 border border-gray-200 rounded-lg px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-orange-300" />
                         </td>
                         <td className="px-2 py-2 font-mono text-xs text-gray-500">
                           {exc.nfe || '—'}
@@ -2026,7 +2157,7 @@ export default function ClienteDetailPage() {
                             ) : (
                               <>
                                 <button
-                                  onClick={() => { setEditandoExcedente(exc.movId); setEditExcForm({ ton: exc.excessoTon.toFixed(3), contraparte: exc.contraparte }) }}
+                                  onClick={() => { setEditandoExcedente(exc.movId); setEditExcForm({ data: (exc.data || '').slice(0, 10), ton: exc.excessoTon.toFixed(3), contraparte: exc.contraparte }) }}
                                   className="p-1.5 rounded-lg border border-gray-200 text-gray-400 hover:border-orange-400 hover:text-orange-600 transition-colors"
                                   title="Editar excedente"
                                 >
