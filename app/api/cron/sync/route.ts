@@ -22,7 +22,7 @@ import {
   lerEmailsNFeImap, arquivarProcessados, limparProcessadosAntigos,
 } from '@/lib/imap-service'
 import { processarEmailV2, limparCacheClientes } from '@/lib/ingestao-v2'
-import { arquivoJaProcessado } from '@/lib/supabase-service'
+import { arquivoJaProcessado, limparCacheIdentificacao } from '@/lib/supabase-service'
 import { getServerClient } from '@/lib/supabase'
 import { getSessaoAdmin } from '@/lib/admin-auth'
 
@@ -69,6 +69,7 @@ export async function POST(request: NextRequest) {
   const t0 = Date.now()
   const supabase = getServerClient()
   limparCacheClientes()
+  limparCacheIdentificacao()
 
   // ── 1. Trava ──────────────────────────────────────────────────────────
   // Libera rodadas presas antes de tentar a própria (índice único em

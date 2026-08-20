@@ -106,6 +106,39 @@ export function chaveDoNomeArquivo(nomeArquivo: string): string | null {
 // IDENTIFICAÇÃO DE CLIENTE
 // ─────────────────────────────────────────────
 
+/**
+ * Cadastro de clientes em memória, para a duração de uma rodada.
+ *
+ * Motivo: identificarCliente fazia de 2 a 6 consultas ao Supabase POR ANEXO.
+ * Num email-lote isso multiplica — em 17/08/2026 uma mensagem com um ZIP de 37
+ * notas da Arclad (nenhuma de cliente cadastrado, então todos os fallbacks
+ * rodavam) gastou ~370 idas ao banco e 57s, estourando o teto de 60s da Vercel.
+ * A rodada morria antes de fechar a execução e antes de avançar a marca
+ * d'água, então a rodada seguinte reencontrava a mesma mensagem: a fila parou
+ * por três dias com 690 emails.
+ *
+ * São seis clientes e seis CNPJs — cabe inteiro na memória. A rotina limpa o
+ * cache no início de cada rodada, e quem edita cliente limpa também, para não
+ * decidir com cadastro velho.
+ */
+type ClienteCache = { id: string; cnpj: string | null; nome: string | null; nome_fantasia: string | null; email_remetente: string | null }
+let cacheCadastro: { clientes: ClienteCache[]; cnpjs: Array<{ cnpj: string; tipo: string; cliente_id: string }> } | null = null
+
+export function limparCacheIdentificacao() { cacheCadastro = null }
+
+async function cadastroParaIdentificacao() {
+  if (cacheCadastro) return cacheCadastro
+  const supabase = getServerClient()
+  const [{ data: clientes }, { data: cnpjs }] = await Promise.all([
+    supabase.from('clientes')
+      .select('id, cnpj, nome, nome_fantasia, email_remetente')
+      .eq('ativo', true),
+    supabase.from('clientes_cnpj').select('cnpj, tipo, cliente_id'),
+  ])
+  cacheCadastro = { clientes: (clientes ?? []) as ClienteCache[], cnpjs: (cnpjs ?? []) as Array<{ cnpj: string; tipo: string; cliente_id: string }> }
+  return cacheCadastro
+}
+
 /** Tenta identificar o cliente pelo CNPJ do emitente ou destinatário. */
 export async function identificarCliente(
   cnpjEmitente: string,
@@ -116,26 +149,13 @@ export async function identificarCliente(
   assunto?: string,
   cnpjsCorpo: string[] = [],
 ): Promise<string | null> {
-  const supabase = getServerClient()
-
-  // Carrega todos os clientes (CNPJ cadastrado) uma vez para os fallbacks
-  const { data: todosClientes } = await supabase
-    .from('clientes')
-    .select('id, cnpj')
-    .eq('ativo', true)
-    .not('cnpj', 'is', null)
+  const cadastro = await cadastroParaIdentificacao()
+  const todosClientes = cadastro.clientes.filter(c => c.cnpj)
 
   // Busca em clientes_cnpj com tipo específico para evitar colisão emitente/destinatário
   async function buscarCnpjComTipo(cnpj: string, tipo: string): Promise<string | null> {
     if (!cnpj) return null
-    const { data } = await supabase
-      .from('clientes_cnpj')
-      .select('cliente_id')
-      .eq('cnpj', cnpj)
-      .eq('tipo', tipo)
-      .limit(1)
-      .maybeSingle()
-    return data?.cliente_id ?? null
+    return cadastro.cnpjs.find(r => r.cnpj === cnpj && r.tipo === tipo)?.cliente_id ?? null
   }
 
   // Busca CNPJ em clientes.cnpj (cadastro principal) — apenas match exato
@@ -175,13 +195,9 @@ export async function identificarCliente(
   // 3. Busca por email_remetente cadastrado no cliente
   if (remetente) {
     const dominio = remetente.includes('@') ? remetente.split('@')[1] : remetente
-    const { data: clientes } = await supabase
-      .from('clientes')
-      .select('id, email_remetente')
-      .not('email_remetente', 'is', null)
-      .eq('ativo', true)
+    const clientes = cadastro.clientes.filter(c => c.email_remetente)
 
-    for (const c of clientes ?? []) {
+    for (const c of clientes) {
       const emailCad = (c.email_remetente as string).toLowerCase()
       if (
         remetente.toLowerCase().includes(emailCad) ||
@@ -196,10 +212,7 @@ export async function identificarCliente(
   // 4. Busca por nome do emitente da NF-e ou assunto contra nome_fantasia / nome do cliente
   const textosBusca = [nomeEmitente, remetenteNome, assunto].filter(Boolean) as string[]
   if (textosBusca.length > 0) {
-    const { data: clientes } = await supabase
-      .from('clientes')
-      .select('id, nome, nome_fantasia, email_remetente')
-      .eq('ativo', true)
+    const clientes = cadastro.clientes
 
     // Normaliza: minúsculas, sem acentos, sem pontuação, sem sufixos empresariais
     const normalizarNome = (s: string) =>
@@ -208,7 +221,7 @@ export async function identificarCliente(
         .replace(/\b(ltda|s\.?a\.?|eireli|me|epp|ss|sa|industria|comercio|com|ind|self|adhesives|brasil|do|de|da)\b/g, '')
         .replace(/[^a-z0-9]/g, '')
 
-    for (const c of clientes ?? []) {
+    for (const c of clientes) {
       const nomeCliente = normalizarNome(c.nome_fantasia || c.nome || '')
       if (nomeCliente.length < 4) continue
       for (const texto of textosBusca) {
@@ -1295,6 +1308,8 @@ export async function atualizarCliente(id: string, dados: {
   cobrar_separacao_sacaria?: boolean
   modo_calculo?: string
 }) {
+  // Cadastro mudou: a próxima identificação precisa reler (ver limparCacheIdentificacao).
+  limparCacheIdentificacao()
   const supabase = getServerClient()
   const { data, error } = await supabase
     .from('clientes')
@@ -1326,6 +1341,8 @@ export async function criarCliente(dados: {
   aliquota_imposto?: number
   regra_fator_pallet?: number
 }) {
+  // Cadastro mudou: a próxima identificação precisa reler (ver limparCacheIdentificacao).
+  limparCacheIdentificacao()
   const supabase = getServerClient()
   const { data, error } = await supabase
     .from('clientes')
