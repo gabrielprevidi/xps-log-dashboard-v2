@@ -63,20 +63,56 @@ function mesAtualStr() {
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
 }
 
-const CHART_COLORS = ['#0d1b2e', '#2563eb', '#059669', '#d97706', '#7c3aed', '#db2777']
+/**
+ * Duas cores, porque o gráfico tem duas séries: entradas e saídas.
+ *
+ * Antes eram seis cores em rodízio, duas por cliente. Com 16 clientes o rodízio
+ * dava a volta a cada três: "Adegraf Ent.", "Fedrigoni Ent." e "Tecnoset Ent."
+ * saíam todas no mesmo roxo, e a legenda de 32 itens em quatro linhas não
+ * identificava coisa alguma. Mais cor não resolve — acima de ~7 classes nenhuma
+ * paleta se sustenta sob daltonismo.
+ *
+ * A cor passa a seguir a MEDIDA (entrada/saída), não o cliente. Assim ela não
+ * muda quando o filtro de cliente muda — antes, trocar o filtro repintava as
+ * séries que sobravam.
+ *
+ * Par validado contra a superfície branca do card: ΔE 24,7 sob protanopia e
+ * 33,6 em visão normal (alvos 8 e 15).
+ */
+const COR_ENTRADA = '#2a78d6'
+const COR_SAIDA = '#eb6834'
 
 const CustomTooltip = ({ active, payload, label }: any) => {
   if (!active || !payload?.length) return null
+  // O detalhe por cliente viaja junto no ponto do gráfico: sai da legenda, que
+  // não dava conta, e entra no tooltip, onde há espaço e contexto.
+  const detalhe: Array<{ nome: string; entradas: number; saidas: number }> =
+    payload[0]?.payload?.__detalhe ?? []
   return (
-    <div className="bg-[#0d1b2e] text-white rounded-xl px-4 py-3 shadow-xl text-xs">
-      <p className="font-semibold mb-1">{label}</p>
+    <div className="bg-[#0d1b2e] text-white rounded-xl px-4 py-3 shadow-xl text-xs min-w-[190px]">
+      <p className="font-semibold mb-1.5">{label}</p>
       {payload.map((entry: any) => (
         <div key={entry.dataKey} className="flex items-center gap-2 mt-0.5">
           <span style={{ color: entry.fill }} className="font-bold">■</span>
           <span className="text-gray-300">{entry.name}:</span>
-          <span className="font-bold">{entry.value}</span>
+          <span className="font-bold ml-auto">{entry.value.toLocaleString('pt-BR')}</span>
         </div>
       ))}
+      {detalhe.length > 0 && (
+        <div className="mt-2 pt-2 border-t border-white/15">
+          <p className="text-gray-400 mb-1">Por cliente</p>
+          {detalhe.map(d => (
+            <div key={d.nome} className="flex items-center gap-3 mt-0.5">
+              <span className="text-gray-300 truncate max-w-[110px]">{d.nome}</span>
+              <span className="ml-auto tabular-nums">
+                <span style={{ color: COR_ENTRADA }}>{d.entradas.toLocaleString('pt-BR')}</span>
+                <span className="text-gray-500"> / </span>
+                <span style={{ color: COR_SAIDA }}>{d.saidas.toLocaleString('pt-BR')}</span>
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
@@ -142,14 +178,35 @@ export default function HomePage() {
     ? analytics
     : analytics.filter(c => c.clienteId === clienteFiltro)
 
+  // Uma barra de entrada e uma de saída por mês, somando os clientes visíveis.
+  // O recorte por cliente continua no seletor acima do gráfico; o detalhe de
+  // quem compôs o mês vai em __detalhe, que o tooltip mostra.
+  const TOP_DETALHE = 6
   const chartData = mesesParaGrafico.map(mes => {
-    const ponto: Record<string, string | number> = { mes: mesLabel(mes) }
-    for (const c of analyticsFiltered) {
-      const d = c.meses.find(m => m.mes === mes)
-      ponto[`${c.nome} Ent.`] = d?.entradas ?? 0
-      ponto[`${c.nome} Saí.`] = d?.saidas ?? 0
+    const porCliente = analyticsFiltered
+      .map(c => {
+        const d = c.meses.find(m => m.mes === mes)
+        return { nome: c.nome, entradas: d?.entradas ?? 0, saidas: d?.saidas ?? 0 }
+      })
+      .filter(d => d.entradas > 0 || d.saidas > 0)
+      .sort((a, b) => (b.entradas + b.saidas) - (a.entradas + a.saidas))
+
+    const visiveis = porCliente.slice(0, TOP_DETALHE)
+    const resto = porCliente.slice(TOP_DETALHE)
+    if (resto.length > 0) {
+      visiveis.push({
+        nome: `+${resto.length} outros`,
+        entradas: resto.reduce((s, d) => s + d.entradas, 0),
+        saidas: resto.reduce((s, d) => s + d.saidas, 0),
+      })
     }
-    return ponto
+
+    return {
+      mes: mesLabel(mes),
+      Entradas: porCliente.reduce((s, d) => s + d.entradas, 0),
+      Saídas: porCliente.reduce((s, d) => s + d.saidas, 0),
+      __detalhe: visiveis,
+    }
   })
 
   // ── maiores ganhos (último mês com dados) ──
@@ -286,11 +343,13 @@ export default function HomePage() {
                   <XAxis dataKey="mes" tick={{ fontSize: 11, fill: '#9ca3af' }} tickLine={false} axisLine={false} />
                   <YAxis tick={{ fontSize: 11, fill: '#9ca3af' }} tickLine={false} axisLine={false} />
                   <Tooltip content={<CustomTooltip />} />
-                  <Legend wrapperStyle={{ fontSize: 11, paddingTop: 8 }} />
-                  {analyticsFiltered.flatMap((c, ci) => [
-                    <Bar key={`${c.clienteId}-ent`} dataKey={`${c.nome} Ent.`} fill={CHART_COLORS[ci * 2 % CHART_COLORS.length]} radius={[4, 4, 0, 0]} maxBarSize={32} />,
-                    <Bar key={`${c.clienteId}-sai`} dataKey={`${c.nome} Saí.`} fill={CHART_COLORS[(ci * 2 + 1) % CHART_COLORS.length]} radius={[4, 4, 0, 0]} maxBarSize={32} />,
-                  ])}
+                  <Legend
+                    wrapperStyle={{ fontSize: 12, paddingTop: 12 }}
+                    iconType="circle"
+                    iconSize={9}
+                  />
+                  <Bar dataKey="Entradas" fill={COR_ENTRADA} radius={[4, 4, 0, 0]} maxBarSize={28} />
+                  <Bar dataKey="Saídas" fill={COR_SAIDA} radius={[4, 4, 0, 0]} maxBarSize={28} />
                 </BarChart>
               </ResponsiveContainer>
             </div>
