@@ -38,8 +38,22 @@
 
 
 -- PASSO 2 — extensões e agendamento
+--
+-- As duas também podem ser ligadas pelo painel, em Database → Extensions,
+-- procurando por "pg_cron" e "pg_net". Se já estiverem ligadas, os comandos
+-- abaixo não fazem nada.
 create extension if not exists pg_cron;
 create extension if not exists pg_net;
+
+-- Trava de segurança: sem o segredo no Vault, o header de Authorization sairia
+-- nulo e TODA rodada agendada tomaria 401 — em silêncio, porque o pg_net não
+-- espera a resposta. Melhor falhar aqui, na hora de aplicar.
+do $$
+begin
+  if not exists (select 1 from vault.decrypted_secrets where name = 'xps_cron_secret') then
+    raise exception 'Rode o PASSO 1 antes: o segredo "xps_cron_secret" não existe no Vault.';
+  end if;
+end $$;
 
 -- Remove o agendamento anterior, se já existir, para esta migration poder ser
 -- reaplicada sem duplicar o job.
@@ -71,6 +85,11 @@ select cron.schedule(
 
 -- ─────────────────────────────────────────────────────────────────────────
 -- CONFERÊNCIA
+--
+--   -- o segredo está no Vault e confere com o da Vercel?
+--   select name, length(decrypted_secret) as tamanho
+--     from vault.decrypted_secrets where name = 'xps_cron_secret';
+--   -- (tem de dar 64)
 --
 --   -- o job está agendado?
 --   select jobid, jobname, schedule, active from cron.job where jobname = 'xps-sync-5min';
