@@ -1,5 +1,6 @@
 /**
- * Rotina automática da V2 — chamada a cada 15 minutos pelo agendador externo.
+ * Rotina automática da V2 — chamada a cada 5 minutos pelo pg_cron do Supabase
+ * (ver supabase/018_agendamento_pg_cron.sql).
  *
  *   curl -X POST https://xps-log-dashboard-v2.vercel.app/api/cron/sync \
  *        -H "Authorization: Bearer $CRON_SECRET"
@@ -29,8 +30,16 @@ import { getSessaoAdmin } from '@/lib/admin-auth'
 export const dynamic = 'force-dynamic'
 export const maxDuration = 60
 
-/** Rodada considerada travada depois disto — a próxima assume. */
-const LOCK_TIMEOUT_MIN = 20
+/**
+ * Rodada considerada travada depois disto — a próxima assume.
+ *
+ * Era 20 minutos. A Vercel mata a função em 60s (maxDuration), então uma
+ * rodada viva NUNCA passa de 1 minuto: 20 era tempo de espera puro. Em
+ * 17/08/2026 cada rodada morta custou 20 minutos de fila parada, e o episódio
+ * inteiro durou três dias. Com 3 minutos há folga de 3x sobre o teto real e a
+ * recuperação é quase imediata.
+ */
+const LOCK_TIMEOUT_MIN = 3
 
 /**
  * Rodadas seguidas sem avançar a marca d'água, havendo fila, que caracterizam
@@ -41,11 +50,45 @@ const RODADAS_PARA_ALERTA = 3
 
 /**
  * Fila acima disto vira notificação: há notas esperando que a rodada de 15 em
- * 15 minutos não vai alcançar tão cedo. Diferente do alerta de travamento —
+ * 5 minutos não vai alcançar tão cedo. Diferente do alerta de travamento —
  * aqui a rotina funciona, só não dá conta do volume (ou vinha de um timeout,
  * que mata a rodada sem processar nada).
  */
 const FILA_PARA_ALERTA = Number(process.env.FILA_PARA_ALERTA || 40)
+
+/**
+ * Teto de rodadas encadeadas por disparo do agendador.
+ *
+ * O agendador chama de 5 em 5 minutos, mas uma rodada só dá conta de um lote.
+ * Em vez de esperar o próximo tique com fila acumulada, a rodada que termina
+ * com fila pendente chama a próxima na hora — mesmo comportamento do botão
+ * "Sincronizar fila" do dashboard. 40 rodadas cobrem ~1000 mensagens, bem
+ * acima de qualquer acúmulo normal, e o contador impede laço infinito se algo
+ * der errado.
+ */
+const MAX_CADEIA = 40
+
+/**
+ * Dispara a próxima rodada sem esperar a resposta.
+ *
+ * Aborta a própria espera em 2s de propósito: a Vercel conclui a função mesmo
+ * com a conexão cortada (é o que já acontecia com o corte de 30s do agendador
+ * externo), então a rodada seguinte roda inteira enquanto esta retorna.
+ */
+async function encadearProxima(origem: string, cadeia: number): Promise<void> {
+  const token = process.env.CRON_SECRET
+  if (!token) return
+  try {
+    await fetch(`${origem}/api/cron/sync`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ gatilho: 'cadeia', cadeia }),
+      signal: AbortSignal.timeout(2000),
+    })
+  } catch {
+    // Timeout aqui é o esperado — a rodada seguinte já começou do outro lado.
+  }
+}
 
 function autorizado(request: NextRequest): boolean {
   const esperado = process.env.CRON_SECRET
@@ -57,7 +100,7 @@ function autorizado(request: NextRequest): boolean {
 export async function POST(request: NextRequest) {
   // Token do agendador OU sessão de admin — a segunda é o que permite o botão
   // "Sincronizar agora" no dashboard, para quando uma rodada falha e não se
-  // quer esperar os 15 minutos seguintes.
+  // quer esperar os 5 minutos seguintes.
   const viaToken = autorizado(request)
   if (!viaToken && !(await getSessaoAdmin())) {
     return NextResponse.json({ error: 'Não autorizado' }, { status: 401 })
@@ -65,6 +108,13 @@ export async function POST(request: NextRequest) {
 
   const body = await request.json().catch(() => ({}))
   const dryRun: boolean = body.dry_run === true
+  const cadeia: number = Number(body.cadeia ?? 0)
+  // Gatilho efetivo — a mesma expressão usada ao abrir a execução, para que a
+  // decisão de encadear case com o que fica registrado em sync_execucoes.
+  const gatilho: string = body.gatilho ?? (viaToken ? 'cron' : 'manual')
+  // O botão "Sincronizar fila" já roda o próprio laço no navegador; encadear
+  // por cima faria as duas correntes brigarem pela trava.
+  const viaBotao = gatilho === 'manual'
   const limite: number = body.limite ?? Number(process.env.SYNC_LOTE_MAX || 20)
   const t0 = Date.now()
   const supabase = getServerClient()
@@ -82,7 +132,7 @@ export async function POST(request: NextRequest) {
   let execucaoId: string | null = null
   if (!dryRun) {
     const { data, error } = await supabase.from('sync_execucoes')
-      .insert({ status: 'rodando', gatilho: body.gatilho ?? (viaToken ? 'cron' : 'manual') })
+      .insert({ status: 'rodando', gatilho })
       .select('id').single()
     if (error || !data) {
       return NextResponse.json(
@@ -294,9 +344,20 @@ export async function POST(request: NextRequest) {
       erro: erros.length ? erros.slice(0, 20).join(' | ') : null,
     }).eq('id', execucaoId)
 
+    // Fila ainda cheia e a rodada avançou: chama a próxima agora, em vez de
+    // esperar o tique seguinte do agendador. Só para disparo automático — o
+    // botão do dashboard já faz o próprio laço, e encadear os dois faria as
+    // rodadas competirem pela trava.
+    const encadeavel = !viaBotao && avancou && leitura.fila_restante > 0 && cadeia < MAX_CADEIA
+    if (encadeavel) {
+      await encadearProxima(new URL(request.url).origin, cadeia + 1)
+    }
+
     return NextResponse.json({
       ok: true,
       duracao_ms: duracao,
+      cadeia,
+      encadeou: encadeavel,
       pastas_varridas: leitura.pastas_varridas,
       mensagens_examinadas: leitura.mensagens_examinadas,
       emails_aceitos: emailsAceitos,
@@ -418,7 +479,7 @@ export async function GET(request: NextRequest) {
    *
    * O rótulo era fixo em "15 min" e continuou dizendo isso depois de o
    * agendador passar para 5 — número escrito à mão sempre acaba mentindo,
-   * porque a configuração vive fora daqui, no cron-job.org. A mediana dos
+   * porque a configuração vive fora daqui, no agendamento do pg_cron. A mediana dos
    * intervalos recentes é imune a rodadas manuais no meio.
    */
   const doCron = execucoes

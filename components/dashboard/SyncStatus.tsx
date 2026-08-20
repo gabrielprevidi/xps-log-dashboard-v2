@@ -4,7 +4,7 @@
  * Status da sincronização automática da V2.
  *
  * Substitui o botão "Sincronizar" da V1: em vez de o operador disparar e
- * esperar, a rotina roda de 15 em 15 minutos e esta faixa mostra o que
+ * esperar, a rotina roda de 5 em 5 minutos e esta faixa mostra o que
  * aconteceu. Quando entram notas novas, chama `onNovasNotas()` — que é o mesmo
  * recarregamento que o clique fazia antes.
  *
@@ -101,7 +101,7 @@ export default function SyncStatus({ onNovasNotas }: { onNovasNotas?: () => void
    * no navegador, porque uma função da Vercel tem 60 segundos e a fila pode ter
    * centenas de mensagens. Assim nenhum email fica para trás mesmo quando o
    * agendador não deu conta (falhou, foi desativado, ou o volume superou a
-   * vazão de uma rodada a cada 15 minutos).
+   * vazão de uma rodada a cada 5 minutos).
    *
    * Para sozinho quando: a fila zera, o usuário cancela, ou duas rodadas
    * seguidas não avançam (sinal de mensagem problemática — insistir só gastaria
@@ -322,7 +322,7 @@ export default function SyncStatus({ onNovasNotas }: { onNovasNotas?: () => void
       {execucoes !== null && execucoes.length === 0 && (
         <p className="mt-3 text-xs text-gray-400 flex items-center gap-1.5">
           <Clock className="w-3.5 h-3.5 shrink-0" />
-          Nenhuma execução registrada ainda. A primeira acontece em até 15 minutos.
+          Nenhuma execução registrada ainda. A primeira acontece em até 5 minutos.
         </p>
       )}
 
