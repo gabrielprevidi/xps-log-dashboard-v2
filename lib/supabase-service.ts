@@ -1876,19 +1876,32 @@ export async function limparDadosCliente(
   return { movimentacoes: movCount ?? 0, arquivos: arqCount }
 }
 
+/**
+ * Contagem de emails por status, para os cartões do topo da página de NF-es.
+ *
+ * Contava as linhas no cliente, com um SELECT sem limite. Só que o PostgREST
+ * corta em 1000 linhas por padrão: com 2125 emails no banco, os cartões
+ * mostravam "1000 recebidos / 1000 processados / 0 pendentes" e ficariam
+ * nesses números para sempre. Parecia sistema parado — foi o que levantou a
+ * suspeita de sincronização travada em 20/08/2026, com a rotina rodando
+ * normalmente.
+ *
+ * Contar no banco (head + count exact) não traz linha nenhuma e não tem teto.
+ */
 export async function contarEmailsPorStatus() {
   const supabase = getServerClient()
-  const { data, error } = await supabase
-    .from('emails_importados')
-    .select('status_processamento')
-
-  if (error) throw error
-
-  const contagem = { total: 0, processado: 0, pendente: 0, erro: 0 }
-  for (const row of data ?? []) {
-    contagem.total++
-    const s = row.status_processamento as keyof typeof contagem
-    if (s in contagem) contagem[s]++
+  const contar = async (status?: string): Promise<number> => {
+    let q = supabase
+      .from('emails_importados')
+      .select('id', { count: 'exact', head: true })
+    if (status) q = q.eq('status_processamento', status)
+    const { count, error } = await q
+    if (error) throw error
+    return count ?? 0
   }
-  return contagem
+
+  const [total, processado, pendente, erro] = await Promise.all([
+    contar(), contar('processado'), contar('pendente'), contar('erro'),
+  ])
+  return { total, processado, pendente, erro }
 }
