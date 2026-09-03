@@ -9,6 +9,7 @@
     "lint": "eslint",
     "db:setup": "tsx scripts/setup-db.ts",
     "db:migrate-v2": "tsx scripts/migrate-v2.ts",
+    "admin:seed": "tsx scripts/seed-admin.ts",
     "test:classificacao": "node --experimental-strip-types scripts/test-classificacao.ts"
   },
   "dependencies": {

@@ -78,6 +78,11 @@ const PADROES_NAO_CONTABILIZA = [
  *
  * Usada apenas pelo pipeline da V2. A V1 continua com
  * `tipoOperacaoPorNatureza`, que nunca descarta.
+ *
+ * Modo 'especie' (clientes migrados do padrão para leitura só-PDF, ver
+ * `lib/supabase-service.ts`) não tem regra própria aqui de propósito — cai na
+ * mesma regra genérica do modo 'padrao', só a origem da quantidade muda
+ * (campo ESPÉCIE em vez de peso).
  */
 export function classificarOperacaoV2(
   natureza: string,

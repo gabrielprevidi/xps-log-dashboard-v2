@@ -7,7 +7,7 @@ import {
   ArrowLeft, Edit2, X, Loader2, Package, ArrowDownToLine,
   ArrowUpFromLine, TrendingUp, ChevronLeft, ChevronRight,
   Save, AlertCircle, Lock, FileUp, CheckCircle, ExternalLink, Send, FileText,
-  Pencil, Plus, Trash2, ShieldAlert, RotateCcw, Scissors, Download,
+  Pencil, Plus, Trash2, ShieldAlert, RotateCcw, Scissors, Download, CheckCircle2, Upload,
 } from 'lucide-react'
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, Cell,
@@ -38,6 +38,9 @@ interface Movimentacao {
   regra_fator_pallet: number | null
   created_at: string | null
   arquivos_nfe: { nome_emitente: string; nome_destinatario: string } | null
+  verificado?: boolean | null
+  verificado_em?: string | null
+  verificado_por_nome?: string | null
 }
 
 interface ClienteProdutoSimples {
@@ -289,6 +292,7 @@ function MovFormRow({ f, setF, onSave, onCancel, saving, produtos, temColunaFato
           className="w-16 border border-gray-200 rounded-lg px-2 py-1 text-xs text-right focus:outline-none focus:ring-2 focus:ring-blue-400"
         />
       </td>
+      <td className="px-2 py-2" />
       <td className="px-2 py-2 text-right">
         <div className="flex items-center justify-end gap-1">
           <button
@@ -369,6 +373,10 @@ export default function ClienteDetailPage() {
   const [adicionandoMov, setAdicionandoMov] = useState(false)
   const [novaMovForm, setNovaMovForm] = useState<MovForm>(MOV_FORM_VAZIO)
   const [salvandoNovaMov, setSalvandoNovaMov] = useState(false)
+
+  // upload manual de NF-e (PDF)
+  const [enviandoNfeManual, setEnviandoNfeManual] = useState(false)
+  const [erroNfeManual, setErroNfeManual] = useState<string | null>(null)
 
   // cobranças adicionais
   const [cobrancasAdicionais, setCobrancasAdicionais] = useState<CobrancaAdicional[]>([])
@@ -908,6 +916,50 @@ export default function ClienteDetailPage() {
     const val = parseFloat(manuseioLocal[movId] ?? '4.5')
     if (isNaN(val)) return
     await fetch(`/api/movimentacoes/${movId}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ valor_manuseio: val }) })
+  }
+
+  async function toggleVerificacao(mov: Movimentacao) {
+    const novoValor = !mov.verificado
+    // Otimista: já reflete na tela antes da resposta do servidor
+    setTodasMovs(prev => prev.map(m => m.id === mov.id ? { ...m, verificado: novoValor } : m))
+    try {
+      const res = await fetch(`/api/movimentacoes/${mov.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ verificado: novoValor }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Falha ao marcar conferência')
+      setTodasMovs(prev => prev.map(m => m.id === mov.id ? { ...m, ...data } : m))
+    } catch (e: any) {
+      // Reverte em caso de erro
+      setTodasMovs(prev => prev.map(m => m.id === mov.id ? { ...m, verificado: mov.verificado } : m))
+      alert('Erro ao marcar conferência: ' + e.message)
+    }
+  }
+
+  async function anexarNfeManual(file: File) {
+    setEnviandoNfeManual(true)
+    setErroNfeManual(null)
+    try {
+      const fd = new FormData()
+      fd.append('arquivo', file)
+      const res = await fetch(`/api/clientes/${id}/nfes`, { method: 'POST', body: fd })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Falha ao subir a NF-e')
+      if (data.avisos?.length) {
+        setErroNfeManual(data.avisos.join(' '))
+      }
+      if (data.movimentacaoId) {
+        // Recarrega para trazer a movimentação recém-criada com todos os campos calculados
+        await carregarDados()
+        setEditandoMovId(data.movimentacaoId)
+      }
+    } catch (e: any) {
+      setErroNfeManual(e.message)
+    } finally {
+      setEnviandoNfeManual(false)
+    }
   }
 
   async function fecharMes() {
@@ -1639,15 +1691,32 @@ export default function ClienteDetailPage() {
                 : `${movsTabela.length} NF${movsTabela.length !== 1 ? '-es' : '-e'}`}
             </span>
             {podeEditarMovs && (
-              <button
-                onClick={() => { setAdicionandoMov(true); setNovaMovForm({ ...MOV_FORM_VAZIO, tipo: 'entrada' }) }}
-                className="flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-lg border border-blue-200 text-blue-600 hover:bg-blue-50 transition-colors"
-              >
-                <Plus size={12} /> Nova linha
-              </button>
+              <>
+                <button
+                  onClick={() => { setAdicionandoMov(true); setNovaMovForm({ ...MOV_FORM_VAZIO, tipo: 'entrada' }) }}
+                  className="flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-lg border border-blue-200 text-blue-600 hover:bg-blue-50 transition-colors"
+                >
+                  <Plus size={12} /> Nova linha
+                </button>
+                <label className="flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-lg border border-blue-200 text-blue-600 hover:bg-blue-50 transition-colors cursor-pointer">
+                  {enviandoNfeManual ? <Loader2 size={12} className="animate-spin" /> : <Upload size={12} />}
+                  Anexar NF-e (PDF)
+                  <input
+                    type="file" accept="application/pdf,.pdf" className="hidden" disabled={enviandoNfeManual}
+                    onChange={e => { const f = e.target.files?.[0]; if (f) anexarNfeManual(f); e.target.value = '' }}
+                  />
+                </label>
+              </>
             )}
           </div>
         </div>
+
+        {erroNfeManual && (
+          <div className="bg-orange-50 border border-orange-100 rounded-xl px-4 py-2.5 text-xs text-orange-700 mb-4 flex items-start justify-between gap-3">
+            <span>{erroNfeManual}</span>
+            <button onClick={() => setErroNfeManual(null)} className="text-orange-400 hover:text-orange-600 shrink-0"><X size={14} /></button>
+          </div>
+        )}
 
         {/* Filtros (apenas exibição da tabela) */}
         <div className="flex flex-wrap items-center gap-2 mb-4">
@@ -1707,6 +1776,7 @@ export default function ClienteDetailPage() {
                   <th className="px-4 py-3 text-right">Toneladas</th>
                   {cliente?.cobrar_separacao_sacaria && <th className="px-4 py-3 text-right">Fator</th>}
                   <th className="px-4 py-3 text-right">Pallets</th>
+                  <th className="px-4 py-3 text-center">Conferido</th>
                   {podeEditarMovs && <th className="px-4 py-3 text-right">Ações</th>}
                 </tr>
               </thead>
@@ -1791,6 +1861,22 @@ export default function ClienteDetailPage() {
                         </td>
                       )}
                       <td className={`px-4 py-3 text-right font-bold text-[#0d1b2e] ${cancelada ? 'line-through text-gray-400' : ''}`}>{pallets}</td>
+                      <td className="px-4 py-3 text-center">
+                        <button
+                          onClick={() => toggleVerificacao(mov)}
+                          disabled={cancelada}
+                          title={mov.verificado
+                            ? `Conferido${mov.verificado_por_nome ? ` por ${mov.verificado_por_nome}` : ''}${mov.verificado_em ? ` em ${new Date(mov.verificado_em).toLocaleString('pt-BR')}` : ''} — clique para desmarcar`
+                            : 'Marcar como conferido'}
+                          className={`inline-flex items-center justify-center w-7 h-7 rounded-full border transition-colors disabled:opacity-40 ${
+                            mov.verificado
+                              ? 'bg-emerald-50 border-emerald-200 text-emerald-600 hover:bg-emerald-100'
+                              : 'bg-white border-gray-200 text-gray-300 hover:border-emerald-300 hover:text-emerald-400'
+                          }`}
+                        >
+                          <CheckCircle2 size={15} />
+                        </button>
+                      </td>
                       {podeEditarMovs && (
                         <td className="px-4 py-3 text-right">
                           {cancelada ? (

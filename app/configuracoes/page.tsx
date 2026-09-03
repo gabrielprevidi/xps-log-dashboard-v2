@@ -1,7 +1,8 @@
 'use client'
 
 import { useEffect, useState, useCallback } from 'react'
-import { Save, Plus, Loader2, X, Check, KeyRound, Trash2, Eye, EyeOff, Package, RefreshCw, RotateCcw, AlertCircle, CheckCircle2 } from 'lucide-react'
+import Link from 'next/link'
+import { Save, Plus, Loader2, X, Check, KeyRound, Trash2, Eye, EyeOff, Package, RefreshCw, RotateCcw, AlertCircle, CheckCircle2, UserCog, ScrollText } from 'lucide-react'
 
 interface SyncResultado {
   emails_lidos: number
@@ -446,9 +447,25 @@ export default function ConfiguracoesPage() {
 
   return (
     <main className="max-w-[1100px] mx-auto px-6 py-8">
-      <div className="mb-6">
-        <h1 className="text-2xl font-bold text-[#0d1b2e]">Configurações</h1>
-        <p className="text-sm text-gray-400 mt-1">Gerenciar clientes e parâmetros comerciais</p>
+      <div className="mb-6 flex items-start justify-between flex-wrap gap-3">
+        <div>
+          <h1 className="text-2xl font-bold text-[#0d1b2e]">Configurações</h1>
+          <p className="text-sm text-gray-400 mt-1">Gerenciar clientes e parâmetros comerciais</p>
+        </div>
+        <div className="flex items-center gap-2">
+          <Link
+            href="/configuracoes/usuarios"
+            className="inline-flex items-center gap-2 bg-white border border-gray-200 text-[#0d1b2e] text-sm font-medium px-4 py-2 rounded-xl hover:bg-gray-50 transition-colors"
+          >
+            <UserCog className="w-4 h-4" /> Usuários
+          </Link>
+          <Link
+            href="/configuracoes/logs"
+            className="inline-flex items-center gap-2 bg-white border border-gray-200 text-[#0d1b2e] text-sm font-medium px-4 py-2 rounded-xl hover:bg-gray-50 transition-colors"
+          >
+            <ScrollText className="w-4 h-4" /> Logs
+          </Link>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-[1fr_300px] gap-6">

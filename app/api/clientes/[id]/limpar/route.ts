@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { limparDadosCliente } from '@/lib/supabase-service'
+import { getUsuarioAtual } from '@/lib/admin-auth'
 
 export const dynamic = 'force-dynamic'
 
@@ -23,7 +24,8 @@ export async function DELETE(
     }
 
     const { id } = await params
-    const resultado = await limparDadosCliente(id)
+    const usuario = await getUsuarioAtual()
+    const resultado = await limparDadosCliente(id, usuario ?? undefined)
 
     return NextResponse.json({
       success: true,

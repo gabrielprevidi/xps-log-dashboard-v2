@@ -1,6 +1,6 @@
 'use client'
 
-import { Mail, CheckCircle, XCircle, Clock, ArrowLeftRight, UserPlus, Trash2 } from 'lucide-react'
+import { Mail, CheckCircle, CheckCircle2, XCircle, Clock, ArrowLeftRight, UserPlus, Trash2 } from 'lucide-react'
 import StatusBadge from '@/components/dashboard/StatusBadge'
 import KPICard from '@/components/dashboard/KPICard'
 import SyncStatus from '@/components/dashboard/SyncStatus'
@@ -32,6 +32,9 @@ interface Movimentacao {
   cancelada: boolean | null
   produto_nome: string | null
   produto_id: string | null
+  verificado?: boolean | null
+  verificado_em?: string | null
+  verificado_por_nome?: string | null
   clientes: { id: string; nome_fantasia: string } | null
   arquivos_nfe: { nome_arquivo: string; nome_emitente: string | null; nome_destinatario: string | null } | null
 }
@@ -141,6 +144,28 @@ export default function NFesPage() {
       alert(`Erro ao excluir: ${e.message}`)
     } finally {
       setExcluindo(null)
+    }
+  }
+
+  async function toggleVerificacao(mov: Movimentacao) {
+    const novoValor = !mov.verificado
+    setDados(prev => prev ? {
+      ...prev,
+      movimentacoes: prev.movimentacoes.map(m => m.id === mov.id ? { ...m, verificado: novoValor } : m),
+    } : null)
+    try {
+      const res = await fetch(`/api/movimentacoes/${mov.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ verificado: novoValor }),
+      })
+      if (!res.ok) throw new Error((await res.json()).error)
+    } catch (e: any) {
+      setDados(prev => prev ? {
+        ...prev,
+        movimentacoes: prev.movimentacoes.map(m => m.id === mov.id ? { ...m, verificado: mov.verificado } : m),
+      } : null)
+      alert(`Erro ao marcar conferência: ${e.message}`)
     }
   }
 
@@ -358,6 +383,7 @@ export default function NFesPage() {
                 <th className="px-4 py-3 text-left">Categoria</th>
                 <th className="px-4 py-3 text-left">Fornecedor / Destino</th>
                 <th className="px-4 py-3 text-right">Pallets</th>
+                <th className="px-4 py-3 text-center">Conferido</th>
                 <th className="px-4 py-3 text-center">Ações</th>
               </tr>
             </thead>
@@ -477,6 +503,22 @@ export default function NFesPage() {
                       </td>
                       <td className={`px-4 py-3 text-right font-bold text-[#0d1b2e] ${cancelada ? 'line-through text-gray-400' : ''}`}>
                         {mov.pallets_entrada || mov.pallets_saida || 0}
+                      </td>
+                      <td className="px-4 py-3 text-center">
+                        <button
+                          onClick={() => toggleVerificacao(mov)}
+                          disabled={cancelada}
+                          title={mov.verificado
+                            ? `Conferido${mov.verificado_por_nome ? ` por ${mov.verificado_por_nome}` : ''}${mov.verificado_em ? ` em ${new Date(mov.verificado_em).toLocaleString('pt-BR')}` : ''} — clique para desmarcar`
+                            : 'Marcar como conferido'}
+                          className={`inline-flex items-center justify-center w-7 h-7 rounded-full border transition-colors disabled:opacity-40 ${
+                            mov.verificado
+                              ? 'bg-emerald-50 border-emerald-200 text-emerald-600 hover:bg-emerald-100'
+                              : 'bg-white border-gray-200 text-gray-300 hover:border-emerald-300 hover:text-emerald-400'
+                          }`}
+                        >
+                          <CheckCircle2 size={15} />
+                        </button>
                       </td>
                       <td className="px-4 py-3 text-center">
                         {cancelada ? (

@@ -20,6 +20,128 @@ function getServerClient(): ReturnType<typeof createClient<any, any, any>> {
 }
 
 // ─────────────────────────────────────────────
+// USUÁRIOS ADMINISTRATIVOS + LOG DE AUDITORIA
+// ─────────────────────────────────────────────
+
+export interface Ator {
+  id: string
+  nome: string
+}
+
+/**
+ * Registra uma linha em logs_auditoria. Nunca lança — uma falha ao gravar o
+ * log não pode derrubar a operação que está sendo registrada.
+ */
+export async function registrarLog(
+  usuario: Ator | null | undefined,
+  acao: string,
+  entidade: string,
+  entidadeId?: string | null,
+  detalhes?: Record<string, unknown>,
+): Promise<void> {
+  try {
+    const supabase = getServerClient()
+    await supabase.from('logs_auditoria').insert({
+      usuario_id: usuario?.id ?? null,
+      usuario_nome: usuario?.nome ?? null,
+      acao,
+      entidade,
+      entidade_id: entidadeId ?? null,
+      detalhes: detalhes ?? null,
+    })
+  } catch (e) {
+    console.error('Falha ao registrar log de auditoria:', e)
+  }
+}
+
+export async function listarUsuariosAdmin() {
+  const supabase = getServerClient()
+  const { data, error } = await supabase
+    .from('usuarios_admin')
+    .select('id, nome, email, ativo, created_at')
+    .order('nome')
+  if (error) throw error
+  return data
+}
+
+export async function criarUsuarioAdmin(
+  dados: { nome: string; email: string; senha: string },
+  ator?: Ator,
+) {
+  const bcrypt = (await import('bcryptjs')).default
+  const supabase = getServerClient()
+  const senha_hash = await bcrypt.hash(dados.senha, 10)
+  const { data, error } = await supabase
+    .from('usuarios_admin')
+    .insert({ nome: dados.nome, email: dados.email, senha_hash })
+    .select('id, nome, email, ativo, created_at')
+    .single()
+  if (error) throw error
+  await registrarLog(ator, 'criar', 'usuario', data.id, { nome: dados.nome, email: dados.email })
+  return data
+}
+
+export async function atualizarUsuarioAdmin(
+  id: string,
+  dados: { nome?: string; email?: string; ativo?: boolean; senha?: string },
+  ator?: Ator,
+) {
+  const supabase = getServerClient()
+  const update: Record<string, unknown> = { updated_at: new Date().toISOString() }
+  if (dados.nome !== undefined) update.nome = dados.nome
+  if (dados.email !== undefined) update.email = dados.email
+  if (dados.ativo !== undefined) update.ativo = dados.ativo
+  if (dados.senha) {
+    const bcrypt = (await import('bcryptjs')).default
+    update.senha_hash = await bcrypt.hash(dados.senha, 10)
+  }
+  const { data, error } = await supabase
+    .from('usuarios_admin')
+    .update(update)
+    .eq('id', id)
+    .select('id, nome, email, ativo, created_at')
+    .single()
+  if (error) throw error
+  await registrarLog(ator, 'editar', 'usuario', id, { ...dados, senha: dados.senha ? '(alterada)' : undefined })
+  return data
+}
+
+export async function excluirUsuarioAdmin(id: string, ator?: Ator) {
+  const supabase = getServerClient()
+  const { error } = await supabase.from('usuarios_admin').delete().eq('id', id)
+  if (error) throw error
+  await registrarLog(ator, 'excluir', 'usuario', id)
+}
+
+export async function listarLogsAuditoria(filtros: {
+  entidade?: string
+  usuario_id?: string
+  de?: string
+  ate?: string
+  limite?: number
+  offset?: number
+} = {}) {
+  const supabase = getServerClient()
+  let query = supabase
+    .from('logs_auditoria')
+    .select('*', { count: 'exact' })
+    .order('criado_em', { ascending: false })
+
+  if (filtros.entidade) query = query.eq('entidade', filtros.entidade)
+  if (filtros.usuario_id) query = query.eq('usuario_id', filtros.usuario_id)
+  if (filtros.de) query = query.gte('criado_em', filtros.de)
+  if (filtros.ate) query = query.lte('criado_em', filtros.ate)
+
+  const limite = filtros.limite ?? 50
+  const offset = filtros.offset ?? 0
+  query = query.range(offset, offset + limite - 1)
+
+  const { data, error, count } = await query
+  if (error) throw error
+  return { logs: data, total: count ?? 0 }
+}
+
+// ─────────────────────────────────────────────
 // DEDUPLICAÇÃO
 // ─────────────────────────────────────────────
 
@@ -724,27 +846,41 @@ export async function persistirEmail(
   return resultado
 }
 
-async function persistirAnexo(
+/**
+ * Exportada (além de usada por `persistirEmail`) para permitir correção
+ * pontual de UM anexo dentro de um email já importado — sem reprocessar o
+ * email inteiro nem burlar a deduplicação por email, que continua válida
+ * para os demais anexos daquele mesmo email. Ver `scripts/reprocessar.mts`.
+ */
+export interface ResultadoPersistirAnexo {
+  arquivoId: string | null
+  movimentacaoId: string | null
+}
+
+export async function persistirAnexo(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   supabase: any,
-  emailId: string,
+  emailId: string | null,
   anexo: AnexoXML,
   resultado: ResultadoPersistencia,
   remetente = '',
   remetenteNome = '',
   assunto = '',
   cnpjsCorpo: string[] = [],
-): Promise<void> {
+  opts?: { clienteIdForcado?: string; uploadManual?: boolean; enviadoPor?: string },
+): Promise<ResultadoPersistirAnexo> {
+  const vazio: ResultadoPersistirAnexo = { arquivoId: null, movimentacaoId: null }
+
   // Deduplicação por hash
   if (await arquivoJaProcessado(anexo.hash)) {
     resultado.duplicados++
-    return
+    return vazio
   }
 
   // Deduplicação por chave NFe
   if (anexo.dados_nfe?.chave_nfe && await nfeJaImportada(anexo.dados_nfe.chave_nfe)) {
     resultado.duplicados++
-    return
+    return vazio
   }
 
   const nfe = anexo.dados_nfe
@@ -778,6 +914,8 @@ async function persistirAnexo(
     peso_liquido_ton: pesoTon,
     pallets_calculados: anexo.pallets_calculados,
     processado: true,
+    upload_manual: opts?.uploadManual ?? false,
+    enviado_por: opts?.enviadoPor ?? null,
   }
 
   const { data: arquivoSalvo, error: arquivoErr } = fantasmaId
@@ -788,13 +926,14 @@ async function persistirAnexo(
     resultado.erros.push(
       `Erro ao salvar arquivo ${anexo.nome_arquivo}: ${arquivoErr?.message}`
     )
-    return
+    return vazio
   }
 
   resultado.anexos_salvos++
+  const comArquivo = (movimentacaoId: string | null): ResultadoPersistirAnexo => ({ arquivoId: arquivoSalvo.id, movimentacaoId })
 
-  // Identificar cliente: CNPJ NF-e → CNPJ corpo email → email remetente → nome/assunto
-  const clienteId = await identificarCliente(
+  // Identificar cliente: id forçado (upload manual) ou CNPJ NF-e → CNPJ corpo email → email remetente → nome/assunto
+  const clienteId = opts?.clienteIdForcado ?? await identificarCliente(
     nfe?.cnpj_emitente ?? '',
     nfe?.cnpj_destinatario ?? '',
     remetente,
@@ -807,7 +946,7 @@ async function persistirAnexo(
   // Não cria movimentação sem cliente — registros sem vínculo não têm utilidade
   if (!clienteId) {
     resultado.erros.push(`Arquivo ${anexo.nome_arquivo}: cliente não identificado — sem CNPJ, remetente ou nome reconhecível.`)
-    return
+    return comArquivo(null)
   }
 
   // Busca configuração do cliente sem depender de migrations opcionais.
@@ -857,7 +996,7 @@ async function persistirAnexo(
     if (tipoArquivo !== 'pdf') {
       await supabase.from('arquivos_nfe').delete().eq('id', arquivoSalvo.id)
       resultado.anexos_salvos--
-      return
+      return vazio
     }
 
     // Classificação por texto da natureza (spec original Fedrigoni):
@@ -879,7 +1018,7 @@ async function persistirAnexo(
       resultado.erros.push(
         `Fedrigoni NF-e ${nfe?.numero_nfe ?? anexo.nome_arquivo}: natureza "${nfe?.natureza_operacao || 'sem natureza'}" não contabilizada (informativa).`
       )
-      return
+      return comArquivo(null)
     }
 
     // Volume = QUANTIDADE do campo ESPÉCIE (fator 1:1)
@@ -949,7 +1088,7 @@ async function persistirAnexo(
       percentual_imposto: aliquotaFedrigoni,
     }
 
-    const { error: movErrFedrigoni } = await supabase.from('movimentacoes').insert(movFedrigoni)
+    const { data: movDataFedrigoni, error: movErrFedrigoni } = await supabase.from('movimentacoes').insert(movFedrigoni).select('id').single()
     if (movErrFedrigoni) {
       resultado.erros.push(
         `Erro ao salvar movimentação Fedrigoni ${nfe?.numero_nfe ?? anexo.nome_arquivo}: ${movErrFedrigoni.message}`
@@ -957,7 +1096,7 @@ async function persistirAnexo(
     } else {
       resultado.movimentacoes_salvas++
     }
-    return
+    return comArquivo(movDataFedrigoni?.id ?? null)
   }
 
   // ─────────────────────────────────────────────────────────────────
@@ -979,7 +1118,7 @@ async function persistirAnexo(
     if (tipoArquivo !== 'pdf') {
       await supabase.from('arquivos_nfe').delete().eq('id', arquivoSalvo.id)
       resultado.anexos_salvos--
-      return
+      return vazio
     }
 
     // Regra da Tecnia (remessa = entrada, retorno = saída) agora mora no
@@ -988,7 +1127,7 @@ async function persistirAnexo(
       classificarOperacaoV2(nfe?.natureza_operacao ?? '', 'tecnia')
     if (!tipoOpTecnia) {
       resultado.erros.push(`Tecnia NF-e ${nfe?.numero_nfe ?? anexo.nome_arquivo}: ${motivoTecnia}`)
-      return
+      return comArquivo(null)
     }
 
     // Volume = QUANTIDADE do campo ESPÉCIE (fator 1:1) — igual à Fedrigoni.
@@ -1017,7 +1156,7 @@ async function persistirAnexo(
       percentual_imposto: aliquotaTecnia,
     }
 
-    const { error: movErrTecnia } = await supabase.from('movimentacoes').insert(movTecnia)
+    const { data: movDataTecnia, error: movErrTecnia } = await supabase.from('movimentacoes').insert(movTecnia).select('id').single()
     if (movErrTecnia) {
       resultado.erros.push(
         `Erro ao salvar movimentação Tecnia ${nfe?.numero_nfe ?? anexo.nome_arquivo}: ${movErrTecnia.message}`
@@ -1025,7 +1164,76 @@ async function persistirAnexo(
     } else {
       resultado.movimentacoes_salvas++
     }
-    return
+    return comArquivo(movDataTecnia?.id ?? null)
+  }
+
+  // ─────────────────────────────────────────────────────────────────
+  // LÓGICA ESPECÍFICA: ESPÉCIE (clientes zerados migrados do padrão)
+  // Mesma leitura da Fedrigoni/Tecnia, sem herdar preço nem categorização
+  // exclusiva delas:
+  //   • Lê apenas PDFs (XMLs são ignorados) — o volume vem do campo
+  //     QUANTIDADE/ESPÉCIE do DANFE, que só existe no PDF
+  //   • Entrada/saída pela regra genérica de `classificarOperacaoV2`
+  //     (a mesma que já vale para o modo 'padrao': remessa/depósito=entrada,
+  //     venda/amostra/retorno=saída, compra/transferência descartadas)
+  //   • Volume = QUANTIDADE do campo ESPÉCIE (fator 1:1, não usa peso)
+  //   • Valor por volume vem do cadastro do cliente (padrão R$ 40) — não usa
+  //     a tabela progressiva da Fedrigoni
+  // ─────────────────────────────────────────────────────────────────
+  if (modoCalculo === 'especie') {
+    if (tipoArquivo !== 'pdf') {
+      await supabase.from('arquivos_nfe').delete().eq('id', arquivoSalvo.id)
+      resultado.anexos_salvos--
+      return vazio
+    }
+
+    const { tipo: tipoOpEspecie, motivo: motivoEspecie } =
+      classificarOperacaoV2(nfe?.natureza_operacao ?? '', 'especie', nfe?.codigo_operacao_danfe)
+    if (!tipoOpEspecie) {
+      resultado.erros.push(`NF-e ${nfe?.numero_nfe ?? anexo.nome_arquivo}: ${motivoEspecie}`)
+      return comArquivo(null)
+    }
+
+    const volumesEspecie = nfe?.quantidade_especie ?? null
+    const valorVolumeEspecie = clienteConfig?.valor_pallet ?? 40
+    const aliquotaEspecie = clienteConfig?.aliquota_imposto ?? 0
+
+    if (volumesEspecie === null) {
+      resultado.erros.push(
+        `NF-e ${nfe?.numero_nfe ?? anexo.nome_arquivo}: quantidade de volumes não identificada no documento — revisar manualmente.`
+      )
+    }
+
+    const movEspecie = {
+      cliente_id: clienteId,
+      arquivo_nfe_id: arquivoSalvo.id,
+      produto_id: null,
+      produto_nome: null,
+      tipo_movimentacao: tipoOpEspecie,
+      categoria_movimentacao: 'pa' as const,
+      fornecedor: tipoOpEspecie === 'entrada' ? (nfe?.nome_emitente ?? null) : null,
+      cliente_destino: tipoOpEspecie === 'saida' ? (nfe?.nome_destinatario ?? null) : null,
+      numero_nfe: nfe?.numero_nfe ?? null,
+      chave_nfe: nfe?.chave_nfe ?? null,
+      data_entrada: tipoOpEspecie === 'entrada' ? (nfe?.data_emissao || null) : null,
+      qtd_entrada_ton: null,
+      pallets_entrada: tipoOpEspecie === 'entrada' ? volumesEspecie : null,
+      data_saida: tipoOpEspecie === 'saida' ? (nfe?.data_emissao || null) : null,
+      qtd_saida_ton: null,
+      pallets_saida: tipoOpEspecie === 'saida' ? volumesEspecie : null,
+      valor_pallet: valorVolumeEspecie,
+      percentual_imposto: aliquotaEspecie,
+    }
+
+    const { data: movDataEspecie, error: movErrEspecie } = await supabase.from('movimentacoes').insert(movEspecie).select('id').single()
+    if (movErrEspecie) {
+      resultado.erros.push(
+        `Erro ao salvar movimentação ${nfe?.numero_nfe ?? anexo.nome_arquivo}: ${movErrEspecie.message}`
+      )
+    } else {
+      resultado.movimentacoes_salvas++
+    }
+    return comArquivo(movDataEspecie?.id ?? null)
   }
 
   // ─────────────────────────────────────────────────────────────────
@@ -1047,7 +1255,7 @@ async function persistirAnexo(
       classificarOperacaoV2(nfe?.natureza_operacao ?? '', 'avery')
     if (!tipoOpAvery) {
       resultado.erros.push(`Avery NF-e ${nfe?.numero_nfe ?? anexo.nome_arquivo}: ${motivoAvery}`)
-      return
+      return comArquivo(null)
     }
     const volumesAvery = nfe?.quantidade_especie ?? null
     const valorVolumeAvery = clienteConfig?.valor_pallet ?? 40
@@ -1080,7 +1288,7 @@ async function persistirAnexo(
       percentual_imposto: aliquotaAvery,
     }
 
-    const { error: movErrAvery } = await supabase.from('movimentacoes').insert(movAvery)
+    const { data: movDataAvery, error: movErrAvery } = await supabase.from('movimentacoes').insert(movAvery).select('id').single()
     if (movErrAvery) {
       resultado.erros.push(
         `Erro ao salvar movimentação Avery ${nfe?.numero_nfe ?? anexo.nome_arquivo}: ${movErrAvery.message}`
@@ -1088,7 +1296,7 @@ async function persistirAnexo(
     } else {
       resultado.movimentacoes_salvas++
     }
-    return
+    return comArquivo(movDataAvery?.id ?? null)
   }
 
   // ─────────────────────────────────────────────────────────────────
@@ -1098,7 +1306,7 @@ async function persistirAnexo(
     classificarOperacaoV2(nfe?.natureza_operacao ?? '', modoCalculo)
   if (!tipoOp) {
     resultado.erros.push(`NF-e ${nfe?.numero_nfe ?? anexo.nome_arquivo}: ${motivoPadrao}`)
-    return
+    return comArquivo(null)
   }
   const itensNfe = nfe?.itens ?? []
 
@@ -1115,6 +1323,8 @@ async function persistirAnexo(
     produtosCliente ?? [],
     nfe?.peso_liquido_total ?? 0,
   )
+
+  let ultimaMovimentacaoId: string | null = null
 
   if (gruposMultiProduto) {
     // NF-e com múltiplos produtos — uma movimentação por produto/código
@@ -1144,11 +1354,12 @@ async function persistirAnexo(
           percentual_imposto: grupo.prod.aliquota_imposto,
         } : {}),
       }
-      const { error: movErr } = await supabase.from('movimentacoes').insert(mov)
+      const { data: movData, error: movErr } = await supabase.from('movimentacoes').insert(mov).select('id').single()
       if (movErr) {
         resultado.erros.push(`Erro ao salvar movimentação (${grupo.prod.nome}): ${movErr.message}`)
       } else {
         resultado.movimentacoes_salvas++
+        ultimaMovimentacaoId = movData?.id ?? ultimaMovimentacaoId
       }
     }
   } else {
@@ -1185,15 +1396,18 @@ async function persistirAnexo(
       } : {}),
     }
 
-    const { error: movErr } = await supabase.from('movimentacoes').insert(movimentacao)
+    const { data: movData, error: movErr } = await supabase.from('movimentacoes').insert(movimentacao).select('id').single()
     if (movErr) {
       resultado.erros.push(
         `Erro ao salvar movimentação da NF-e ${nfe?.numero_nfe ?? anexo.nome_arquivo}: ${movErr.message}`
       )
     } else {
       resultado.movimentacoes_salvas++
+      ultimaMovimentacaoId = movData?.id ?? ultimaMovimentacaoId
     }
   }
+
+  return comArquivo(ultimaMovimentacaoId)
 }
 
 // ─────────────────────────────────────────────
@@ -1307,7 +1521,7 @@ export async function atualizarCliente(id: string, dados: {
   cobrar_manuseio?: boolean
   cobrar_separacao_sacaria?: boolean
   modo_calculo?: string
-}) {
+}, ator?: Ator) {
   // Cadastro mudou: a próxima identificação precisa reler (ver limparCacheIdentificacao).
   limparCacheIdentificacao()
   const supabase = getServerClient()
@@ -1330,6 +1544,7 @@ export async function atualizarCliente(id: string, dados: {
     }
   }
 
+  await registrarLog(ator, 'editar', 'cliente', id, dados)
   return data
 }
 
@@ -1340,7 +1555,7 @@ export async function criarCliente(dados: {
   valor_pallet?: number
   aliquota_imposto?: number
   regra_fator_pallet?: number
-}) {
+}, ator?: Ator) {
   // Cadastro mudou: a próxima identificação precisa reler (ver limparCacheIdentificacao).
   limparCacheIdentificacao()
   const supabase = getServerClient()
@@ -1359,6 +1574,7 @@ export async function criarCliente(dados: {
     }).select()
   }
 
+  await registrarLog(ator, 'criar', 'cliente', data.id, { nome: dados.nome })
   return data
 }
 
@@ -1531,7 +1747,7 @@ export async function upsertSaldoMensal(clienteId: string, competencia: string, 
   return data
 }
 
-export async function atualizarManuseio(movimentacaoId: string, valorManuseio: number) {
+export async function atualizarManuseio(movimentacaoId: string, valorManuseio: number, ator?: Ator) {
   const supabase = getServerClient()
   const { data, error } = await supabase
     .from('movimentacoes')
@@ -1540,10 +1756,11 @@ export async function atualizarManuseio(movimentacaoId: string, valorManuseio: n
     .select()
     .single()
   if (error) throw error
+  await registrarLog(ator, 'editar', 'movimentacao', movimentacaoId, { valor_manuseio: valorManuseio })
   return data
 }
 
-export async function vincularClienteMovimentacao(id: string, clienteId: string) {
+export async function vincularClienteMovimentacao(id: string, clienteId: string, ator?: Ator) {
   const supabase = getServerClient()
 
   // Carrega a movimentação + arquivo_nfe para enriquecimento
@@ -1601,10 +1818,11 @@ export async function vincularClienteMovimentacao(id: string, clienteId: string)
     .select()
     .single()
   if (error) throw error
+  await registrarLog(ator, 'editar', 'movimentacao', id, { vincular_cliente: clienteId })
   return data
 }
 
-export async function corrigirTipoMovimentacao(id: string, novoTipo: 'entrada' | 'saida') {
+export async function corrigirTipoMovimentacao(id: string, novoTipo: 'entrada' | 'saida', ator?: Ator) {
   const supabase = getServerClient()
 
   const { data: mov, error: fetchErr } = await supabase
@@ -1653,10 +1871,11 @@ export async function corrigirTipoMovimentacao(id: string, novoTipo: 'entrada' |
     .single()
 
   if (error) throw error
+  await registrarLog(ator, 'editar', 'movimentacao', id, { corrigir_tipo: novoTipo })
   return data
 }
 
-export async function excluirMovimentacao(id: string) {
+export async function excluirMovimentacao(id: string, ator?: Ator) {
   // Soft-delete: marca cancelada = true, mantém no histórico
   const supabase = getServerClient()
   const { error } = await supabase
@@ -1664,9 +1883,10 @@ export async function excluirMovimentacao(id: string) {
     .update({ cancelada: true })
     .eq('id', id)
   if (error) throw error
+  await registrarLog(ator, 'excluir', 'movimentacao', id)
 }
 
-export async function atualizarMovimentacaoCompleta(id: string, dados: Record<string, unknown>) {
+export async function atualizarMovimentacaoCompleta(id: string, dados: Record<string, unknown>, ator?: Ator) {
   const supabase = getServerClient()
   const { data, error } = await supabase
     .from('movimentacoes')
@@ -1675,6 +1895,24 @@ export async function atualizarMovimentacaoCompleta(id: string, dados: Record<st
     .select('*, arquivos_nfe(nome_arquivo, nome_emitente, nome_destinatario, cnpj_emitente, cnpj_destinatario)')
     .single()
   if (error) throw error
+  await registrarLog(ator, 'editar', 'movimentacao', id, dados)
+  return data
+}
+
+/** Marca ou desmarca a conferência manual de uma movimentação. */
+export async function marcarVerificacaoMovimentacao(id: string, verificado: boolean, ator?: Ator) {
+  const supabase = getServerClient()
+  const update = verificado
+    ? { verificado: true, verificado_em: new Date().toISOString(), verificado_por: ator?.id ?? null, verificado_por_nome: ator?.nome ?? null }
+    : { verificado: false, verificado_em: null, verificado_por: null, verificado_por_nome: null }
+  const { data, error } = await supabase
+    .from('movimentacoes')
+    .update(update)
+    .eq('id', id)
+    .select()
+    .single()
+  if (error) throw error
+  await registrarLog(ator, 'verificar', 'movimentacao', id, { verificado })
   return data
 }
 
@@ -1693,7 +1931,7 @@ export async function criarMovimentacaoManual(dados: {
   valor_manuseio?: number | null
   produto_id?: string | null
   produto_nome?: string | null
-}) {
+}, ator?: Ator) {
   const supabase = getServerClient()
   const { data, error } = await supabase
     .from('movimentacoes')
@@ -1701,6 +1939,7 @@ export async function criarMovimentacaoManual(dados: {
     .select('*, arquivos_nfe(nome_arquivo, nome_emitente, nome_destinatario, cnpj_emitente, cnpj_destinatario)')
     .single()
   if (error) throw error
+  await registrarLog(ator, 'criar', 'movimentacao', data.id, { manual: true, cliente_id: dados.cliente_id })
   return data
 }
 
@@ -1828,7 +2067,8 @@ export async function listarMessageIdsImportados(limite = 500): Promise<Set<stri
  * Emails importados NÃO são deletados — pertencem ao histórico geral.
  */
 export async function limparDadosCliente(
-  clienteId: string
+  clienteId: string,
+  ator?: Ator,
 ): Promise<{ movimentacoes: number; arquivos: number }> {
   const supabase = getServerClient()
 
@@ -1873,6 +2113,7 @@ export async function limparDadosCliente(
     }
   }
 
+  await registrarLog(ator, 'excluir', 'cliente_dados', clienteId, { movimentacoes: movCount ?? 0, arquivos: arqCount })
   return { movimentacoes: movCount ?? 0, arquivos: arqCount }
 }
 

@@ -4,6 +4,7 @@ import { useState } from 'react'
 import Image from 'next/image'
 
 export default function AdminLoginPage() {
+  const [email, setEmail] = useState('')
   const [senha, setSenha] = useState('')
   const [erro, setErro] = useState<string | null>(null)
   const [carregando, setCarregando] = useState(false)
@@ -16,7 +17,7 @@ export default function AdminLoginPage() {
       const res = await fetch('/api/admin/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ senha }),
+        body: JSON.stringify({ email, senha }),
       })
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || 'Falha no login')
@@ -43,6 +44,20 @@ export default function AdminLoginPage() {
 
           <form onSubmit={handleLogin} className="space-y-4">
             <div>
+              <label className="block text-xs font-medium text-gray-600 mb-1.5">E-mail</label>
+              <input
+                type="email"
+                value={email}
+                onChange={e => setEmail(e.target.value)}
+                placeholder="voce@xpslog.com.br"
+                required
+                autoComplete="username"
+                autoFocus
+                className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-[#0d1b2e]/20"
+              />
+            </div>
+
+            <div>
               <label className="block text-xs font-medium text-gray-600 mb-1.5">Senha</label>
               <input
                 type="password"
@@ -51,7 +66,6 @@ export default function AdminLoginPage() {
                 placeholder="••••••"
                 required
                 autoComplete="current-password"
-                autoFocus
                 className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-[#0d1b2e]/20"
               />
             </div>
