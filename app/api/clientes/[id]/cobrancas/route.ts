@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { listarCobrancasAdicionais, criarCobrancaAdicional, excluirCobrancaAdicional } from '@/lib/supabase-service'
+import { getServerClient } from '@/lib/supabase'
+import { assertMesAberto, competenciaDe, respostaErro } from '@/lib/fechamento-guard'
 
 export const dynamic = 'force-dynamic'
 
@@ -22,10 +24,12 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     if (!competencia || !descricao || valor == null) {
       return NextResponse.json({ error: 'competencia, descricao e valor obrigatórios' }, { status: 400 })
     }
+    await assertMesAberto(id, competenciaDe(competencia))
     const data = await criarCobrancaAdicional(id, competencia, descricao, parseFloat(valor))
     return NextResponse.json(data)
   } catch (error: any) {
-    return NextResponse.json({ error: error?.message || String(error) }, { status: 500 })
+    const { error: msg, status } = respostaErro(error)
+    return NextResponse.json({ error: msg }, { status })
   }
 }
 
@@ -33,9 +37,19 @@ export async function DELETE(request: NextRequest) {
   try {
     const cobrancaId = new URL(request.url).searchParams.get('cobranca_id')
     if (!cobrancaId) return NextResponse.json({ error: 'cobranca_id obrigatório' }, { status: 400 })
+
+    const supabase = getServerClient()
+    const { data: cobranca } = await supabase
+      .from('cobrancas_adicionais')
+      .select('cliente_id, competencia')
+      .eq('id', cobrancaId)
+      .maybeSingle()
+    if (cobranca) await assertMesAberto(cobranca.cliente_id, competenciaDe(cobranca.competencia))
+
     await excluirCobrancaAdicional(cobrancaId)
     return NextResponse.json({ ok: true })
   } catch (error: any) {
-    return NextResponse.json({ error: error?.message || String(error) }, { status: 500 })
+    const { error: msg, status } = respostaErro(error)
+    return NextResponse.json({ error: msg }, { status })
   }
 }

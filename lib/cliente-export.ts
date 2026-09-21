@@ -62,9 +62,9 @@ function anoMesDeMov(m: Mov): string {
 
 const STATUS_LABEL: Record<string, string> = {
   aberto: 'Aberto',
-  fechado: 'Fechado',
-  aprovado: 'Aprovado pelo cliente',
-  nf_emitida: 'NF emitida',
+  fechado: 'Fechado (bloqueado)',
+  aprovado: 'Fechado (bloqueado)', // status legado do fluxo de aprovação do cliente
+  nf_emitida: 'Fechado — NF anexada',
 }
 
 interface ResumoMes {

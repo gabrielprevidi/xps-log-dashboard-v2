@@ -40,10 +40,10 @@ interface SaldoMensal {
 interface Fechamento {
   id: string
   competencia: string
-  status: 'aberto' | 'fechado' | 'aprovado' | 'nf_emitida'
+  status: 'aberto' | 'fechado' | 'nf_emitida'
   arquivo_cobranca_url: string | null
   arquivo_cobranca_nome: string | null
-  aprovado_em: string | null
+  fechado_em: string | null
 }
 
 interface CobrancaAdicional {
@@ -89,7 +89,6 @@ export default function PortalPage() {
   const [cobrancas, setCobrancas] = useState<CobrancaAdicional[]>([])
   const [produtos, setProdutos] = useState<{ id: string }[]>([])
   const [loading, setLoading] = useState(true)
-  const [aprovando, setAprovando] = useState<string | null>(null)
 
   const [mesAtual, setMesAtual] = useState(() => {
     const now = new Date()
@@ -152,26 +151,6 @@ export default function PortalPage() {
     router.push('/portal/login')
   }
 
-  async function aprovar(fechamento: Fechamento) {
-    const mesNome = mesLabel(anoMesDe(fechamento.competencia))
-    if (!confirm(`Confirmar aprovação da cobrança de ${mesNome}? Após aprovação os dados do mês não poderão ser alterados.`)) return
-    setAprovando(fechamento.id)
-    try {
-      const res = await fetch(`/api/fechamento/${fechamento.id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ acao: 'aprovar' }),
-      })
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.error)
-      await carregarDados()
-    } catch (e: any) {
-      alert('Erro ao aprovar: ' + e.message)
-    } finally {
-      setAprovando(null)
-    }
-  }
-
   // ── derived ──
   const mesesAsc = mesesComDadosAsc(movs)
   const mesesComDados = Array.from(new Set([...mesesAsc, mesAtual])).sort().reverse()
@@ -187,10 +166,8 @@ export default function PortalPage() {
   const fechamentosVisiveis = fechamentos.filter(f => f.status !== 'aberto')
   const fechamentoMes = fechamentosVisiveis.find(f => f.competencia.slice(0, 7) === mesAtual)
   const mesNFEmitida = fechamentoMes?.status === 'nf_emitida'
-  const mesAprovadoCliente = fechamentoMes?.status === 'aprovado'
-  const mesAprovado = mesAprovadoCliente || mesNFEmitida
-  const mesFechado = fechamentoMes?.status === 'fechado' || mesAprovado
-  const pendentesAprovacao = fechamentosVisiveis.filter(f => f.status === 'fechado')
+  const mesFechado = fechamentoMes?.status === 'fechado' || mesNFEmitida
+  const comNF = fechamentosVisiveis.filter(f => f.status === 'nf_emitida' && f.arquivo_cobranca_url)
 
   if (loading || !cliente || !calc) {
     return (
@@ -218,11 +195,6 @@ export default function PortalPage() {
             </div>
           </div>
           <div className="flex items-center gap-4">
-            {pendentesAprovacao.length > 0 && (
-              <span className="text-xs bg-amber-500 text-white px-2.5 py-1 rounded-full font-semibold animate-pulse">
-                {pendentesAprovacao.length} cobrança{pendentesAprovacao.length > 1 ? 's' : ''} pendente{pendentesAprovacao.length > 1 ? 's' : ''}
-              </span>
-            )}
             <button onClick={logout} className="flex items-center gap-1.5 text-xs text-blue-300 hover:text-white transition-colors">
               <LogOut className="w-4 h-4" /> Sair
             </button>
@@ -233,7 +205,7 @@ export default function PortalPage() {
       <main className="max-w-[1200px] mx-auto px-6 py-8">
 
         {/* NFs disponíveis para download */}
-        {fechamentosVisiveis.filter(f => f.status === 'nf_emitida' && f.arquivo_cobranca_url).map(f => (
+        {comNF.map(f => (
           <div key={f.id} className="mb-4 bg-emerald-50 border border-emerald-200 rounded-2xl p-5 flex items-center justify-between flex-wrap gap-4">
             <div className="flex items-center gap-3">
               <div className="w-10 h-10 rounded-xl bg-emerald-100 flex items-center justify-center">
@@ -250,38 +222,6 @@ export default function PortalPage() {
             </a>
           </div>
         ))}
-
-        {/* Cobranças pendentes de aprovação */}
-        {pendentesAprovacao.length > 0 && (
-          <div className="mb-6 space-y-3">
-            {pendentesAprovacao.map(f => (
-              <div key={f.id} className="bg-amber-50 border border-amber-200 rounded-2xl p-5 flex items-center justify-between flex-wrap gap-4">
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-xl bg-amber-100 flex items-center justify-center">
-                    <FileText className="w-5 h-5 text-amber-600" />
-                  </div>
-                  <div>
-                    <p className="font-semibold text-amber-800">Cobrança de {mesLabel(anoMesDe(f.competencia))} aguarda aprovação</p>
-                    <p className="text-xs text-amber-600">{f.arquivo_cobranca_nome || 'Confira os valores abaixo antes de aprovar'}</p>
-                  </div>
-                </div>
-                <div className="flex items-center gap-2">
-                  {f.arquivo_cobranca_url && (
-                    <a href={f.arquivo_cobranca_url} target="_blank" rel="noopener noreferrer"
-                      className="flex items-center gap-1.5 text-xs px-3 py-2 rounded-xl border border-amber-300 text-amber-700 hover:bg-amber-100 transition-colors">
-                      <FileText className="w-3.5 h-3.5" /> Ver NF
-                    </a>
-                  )}
-                  <button onClick={() => aprovar(f)} disabled={aprovando === f.id}
-                    className="flex items-center gap-1.5 text-xs px-4 py-2 rounded-xl bg-amber-600 text-white hover:bg-amber-700 disabled:opacity-50 transition-colors font-semibold">
-                    <CheckCircle className="w-3.5 h-3.5" />
-                    {aprovando === f.id ? 'Aprovando...' : 'Aprovar cobrança'}
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
 
         {/* Seletor de mês */}
         <div className="flex items-center gap-3 mb-6">
@@ -300,21 +240,15 @@ export default function PortalPage() {
             disabled={mesesComDados.indexOf(mesAtual) === 0}
           ><ChevronRight className="w-4 h-4" /></button>
 
-          {mesNFEmitida && (
+          {mesNFEmitida ? (
             <span className="flex items-center gap-1.5 text-xs text-emerald-600 bg-emerald-50 border border-emerald-200 px-3 py-1.5 rounded-full">
               <CheckCircle className="w-3.5 h-3.5" /> NF emitida — mês encerrado
             </span>
-          )}
-          {mesAprovadoCliente && !mesNFEmitida && (
-            <span className="flex items-center gap-1.5 text-xs text-blue-600 bg-blue-50 border border-blue-200 px-3 py-1.5 rounded-full">
-              <Clock className="w-3.5 h-3.5" /> Aprovado — aguardando NF
-            </span>
-          )}
-          {mesFechado && !mesAprovado && (
+          ) : mesFechado ? (
             <span className="flex items-center gap-1.5 text-xs text-amber-600 bg-amber-50 border border-amber-200 px-3 py-1.5 rounded-full">
-              <Clock className="w-3.5 h-3.5" /> Aguardando sua aprovação
+              <Clock className="w-3.5 h-3.5" /> Mês fechado
             </span>
-          )}
+          ) : null}
         </div>
 
         {/* KPIs */}
@@ -630,16 +564,16 @@ export default function PortalPage() {
         )}
 
         {/* Histórico de cobranças */}
-        {fechamentosVisiveis.filter(f => f.status === 'nf_emitida').length > 0 && (
+        {comNF.length > 0 && (
           <div className="bg-white rounded-2xl border border-gray-100 p-6">
             <h2 className="font-semibold text-[#0d1b2e] mb-4">Histórico de Cobranças</h2>
             <div className="space-y-2">
-              {fechamentosVisiveis.filter(f => f.status === 'nf_emitida').map(f => (
+              {comNF.map(f => (
                 <div key={f.id} className="flex items-center justify-between py-2 px-3 bg-gray-50 rounded-xl">
                   <div className="flex items-center gap-2">
                     <CheckCircle className="w-4 h-4 text-emerald-500" />
                     <span className="text-sm font-medium text-gray-700">{mesLabel(anoMesDe(f.competencia))}</span>
-                    <span className="text-xs text-gray-400">Aprovado em {f.aprovado_em ? new Date(f.aprovado_em).toLocaleDateString('pt-BR') : '—'}</span>
+                    <span className="text-xs text-gray-400">Fechado em {f.fechado_em ? new Date(f.fechado_em).toLocaleDateString('pt-BR') : '—'}</span>
                   </div>
                   {f.arquivo_cobranca_url && (
                     <a href={f.arquivo_cobranca_url} target="_blank" rel="noopener noreferrer"

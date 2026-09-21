@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { listarSaldosMensais, upsertSaldoMensal } from '@/lib/supabase-service'
+import { assertMesAberto, competenciaDe, respostaErro } from '@/lib/fechamento-guard'
 
 export const dynamic = 'force-dynamic'
 
@@ -17,9 +18,11 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   try {
     const { id } = await params
     const { competencia, volume_inicial } = await request.json()
+    await assertMesAberto(id, competenciaDe(competencia))
     const saldo = await upsertSaldoMensal(id, competencia, volume_inicial)
     return NextResponse.json(saldo)
   } catch (error: any) {
-    return NextResponse.json({ error: error?.message || String(error) }, { status: 500 })
+    const { error: msg, status } = respostaErro(error)
+    return NextResponse.json({ error: msg }, { status })
   }
 }

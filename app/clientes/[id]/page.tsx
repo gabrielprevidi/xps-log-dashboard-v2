@@ -6,7 +6,7 @@ import Link from 'next/link'
 import {
   ArrowLeft, Edit2, X, Loader2, Package, ArrowDownToLine,
   ArrowUpFromLine, TrendingUp, ChevronLeft, ChevronRight,
-  Save, AlertCircle, Lock, FileUp, CheckCircle, ExternalLink, Send, FileText,
+  Save, AlertCircle, Lock, FileUp, CheckCircle, Send, FileText,
   Pencil, Plus, Trash2, ShieldAlert, RotateCcw, Scissors, Download, CheckCircle2, Upload,
 } from 'lucide-react'
 import {
@@ -51,10 +51,12 @@ interface ClienteProdutoSimples {
 interface Fechamento {
   id: string
   competencia: string
-  status: 'aberto' | 'fechado' | 'aprovado' | 'nf_emitida'
+  status: 'aberto' | 'fechado' | 'nf_emitida'
   arquivo_cobranca_url: string | null
   arquivo_cobranca_nome: string | null
-  aprovado_em: string | null
+  fechado_em: string | null
+  fechado_por: string | null
+  nf_anexada_em: string | null
 }
 
 interface SaldoMensal {
@@ -874,7 +876,7 @@ export default function ClienteDetailPage() {
   }
 
   async function salvarFatorPallet(movId: string, fatorDireto?: number) {
-    if (mesAprovado) return
+    if (mesBloqueado) return
     const mov = todasMovs.find(m => m.id === movId)
     if (!mov) return
     // Usa o valor vindo direto do DOM (fatorDireto) para evitar closure stale:
@@ -1191,12 +1193,11 @@ export default function ClienteDetailPage() {
 
   const fechamentoMes = fechamentos.find(f => f.competencia.slice(0, 7) === mesAtual)
   const mesNFEmitida = fechamentoMes?.status === 'nf_emitida'
-  const mesAprovadoCliente = fechamentoMes?.status === 'aprovado'
-  const mesAprovado = mesAprovadoCliente || mesNFEmitida
-  const mesFechado = fechamentoMes?.status === 'fechado' || mesAprovado
+  // Fechar o mês trava a competência: só a reabertura com senha master libera edições
+  const mesBloqueado = fechamentoMes?.status === 'fechado' || mesNFEmitida
 
   // Edição de movimentações só permitida quando o mês não está travado
-  const podeEditarMovs = !mesAprovado
+  const podeEditarMovs = !mesBloqueado
 
   // ── render helpers ──
   if (loading) return <div className="flex items-center justify-center min-h-[60vh] text-gray-400"><Loader2 className="w-6 h-6 animate-spin mr-2" />Carregando...</div>
@@ -1314,35 +1315,30 @@ export default function ClienteDetailPage() {
             </button>
           )}
 
-          {mesNFEmitida ? (
-            <span className="flex items-center gap-1.5 text-xs text-emerald-600 bg-emerald-50 border border-emerald-200 px-3 py-1.5 rounded-full">
-              <CheckCircle className="w-3.5 h-3.5" /> NF Emitida — mês encerrado
-              {fechamentoMes?.arquivo_cobranca_url && (
-                <a href={fechamentoMes.arquivo_cobranca_url} target="_blank" rel="noopener noreferrer"
-                  className="ml-1 hover:underline flex items-center gap-0.5">
-                  <ExternalLink className="w-3 h-3" /> Ver NF
-                </a>
-              )}
-            </span>
-          ) : mesAprovadoCliente ? (
+          {mesBloqueado ? (
             <div className="flex items-center gap-2">
-              <span className="flex items-center gap-1.5 text-xs text-emerald-600 bg-emerald-50 border border-emerald-200 px-3 py-1.5 rounded-full">
-                <CheckCircle className="w-3.5 h-3.5" /> Cliente aprovou
-                {fechamentoMes?.aprovado_em && (
-                  <span className="text-emerald-500">· {new Date(fechamentoMes.aprovado_em).toLocaleDateString('pt-BR')}</span>
+              <span className="flex items-center gap-1.5 text-xs text-amber-700 bg-amber-50 border border-amber-200 px-3 py-1.5 rounded-full">
+                <Lock className="w-3.5 h-3.5" /> Mês fechado — bloqueado para alterações
+                {fechamentoMes?.fechado_em && (
+                  <span className="text-amber-500">· {new Date(fechamentoMes.fechado_em).toLocaleDateString('pt-BR')}</span>
                 )}
               </span>
+
+              {fechamentoMes?.arquivo_cobranca_url && (
+                <a href={fechamentoMes.arquivo_cobranca_url} target="_blank" rel="noopener noreferrer"
+                  className="flex items-center gap-1.5 text-xs text-emerald-600 bg-emerald-50 border border-emerald-200 px-3 py-1.5 rounded-full hover:bg-emerald-100 transition-colors"
+                  title={fechamentoMes.arquivo_cobranca_nome || 'NF de cobrança'}>
+                  <Download className="w-3.5 h-3.5" /> Baixar NF de cobrança
+                </a>
+              )}
+
               <button
                 onClick={() => setAnexandoNF(true)}
                 className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-xl bg-[#0d1b2e] text-white hover:bg-[#1a2d47] transition-colors font-semibold"
               >
-                <FileUp className="w-3.5 h-3.5" /> Anexar NF
+                <FileUp className="w-3.5 h-3.5" /> {mesNFEmitida ? 'Substituir NF' : 'Anexar NF de cobrança'}
               </button>
             </div>
-          ) : mesFechado ? (
-            <span className="flex items-center gap-1.5 text-xs text-amber-600 bg-amber-50 border border-amber-200 px-3 py-1.5 rounded-full">
-              <Lock className="w-3.5 h-3.5" /> Aguardando aprovação do cliente
-            </span>
           ) : (
             <button
               onClick={() => setFechandoMes(true)}
@@ -1365,7 +1361,8 @@ export default function ClienteDetailPage() {
               </button>
             </div>
             <p className="text-sm text-gray-500 mb-6">
-              O mês será fechado e o cliente receberá uma notificação para aprovação no portal. Após a aprovação, você poderá anexar a NF.
+              O mês será <strong>bloqueado para novas alterações</strong> — movimentações, estoque inicial e cobranças adicionais desta competência ficam travados.
+              Só é possível reabrir com a senha master de administrador. Depois de fechar, você pode anexar a NF de cobrança, que fica disponível para download a qualquer momento.
             </p>
             <div className="flex justify-end gap-2">
               <button onClick={() => setFechandoMes(false)} className="px-4 py-2 rounded-xl border border-gray-200 text-sm text-gray-600 hover:bg-gray-50">Cancelar</button>
@@ -1375,7 +1372,7 @@ export default function ClienteDetailPage() {
                 className="flex items-center gap-2 px-4 py-2 rounded-xl bg-[#0d1b2e] text-white text-sm font-semibold hover:bg-[#1a2d47] disabled:opacity-50"
               >
                 {enviandoFechamento ? <Loader2 className="w-4 h-4 animate-spin" /> : <Lock className="w-4 h-4" />}
-                Fechar e enviar ao cliente
+                Fechar e bloquear mês
               </button>
             </div>
           </div>
@@ -1398,7 +1395,8 @@ export default function ClienteDetailPage() {
             <div className="bg-red-50 border border-red-200 rounded-xl p-4 mb-5">
               <p className="text-sm text-red-700 font-semibold mb-1">Operação de alto risco</p>
               <p className="text-xs text-red-600">
-                Reabrir um mês fechado/aprovado desfaz o processo de aprovação e remove o bloqueio. Qualquer NF já anexada será desvinculada do status. Use somente para correções críticas.
+                Reabrir libera o mês para novas alterações em movimentações, estoque inicial e cobranças adicionais.
+                A NF de cobrança já anexada é preservada, mas pode ficar desatualizada — anexe a NF corrigida ao fechar o mês de novo. Use somente para correções críticas.
               </p>
             </div>
             <div className="mb-4">
@@ -1437,13 +1435,14 @@ export default function ClienteDetailPage() {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm">
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md mx-4 p-6">
             <div className="flex items-center justify-between mb-4">
-              <h2 className="text-lg font-bold text-[#0d1b2e]">Emitir NF — {mesLabel(mesAtual)}</h2>
+              <h2 className="text-lg font-bold text-[#0d1b2e]">NF de cobrança — {mesLabel(mesAtual)}</h2>
               <button onClick={() => { setAnexandoNF(false); setArquivoNF(null) }} className="text-gray-400 hover:text-gray-700">
                 <X className="w-5 h-5" />
               </button>
             </div>
             <p className="text-sm text-gray-500 mb-4">
-              Anexe a NF. Após o envio, o mês ficará com status <strong>NF Emitida</strong> e não poderá mais ser alterado.
+              Anexe a NF de cobrança deste mês. Ela fica guardada no fechamento e disponível para download a qualquer momento.
+              {fechamentoMes?.arquivo_cobranca_nome && <> Arquivo atual: <strong>{fechamentoMes.arquivo_cobranca_nome}</strong> (será substituído).</>}
             </p>
             <div className="border-2 border-dashed border-gray-200 rounded-xl p-6 text-center mb-4">
               <FileText className="w-8 h-8 text-gray-400 mx-auto mb-2" />
@@ -1466,7 +1465,7 @@ export default function ClienteDetailPage() {
                 className="flex items-center gap-2 px-4 py-2 rounded-xl bg-emerald-600 text-white text-sm font-semibold hover:bg-emerald-700 disabled:opacity-50"
               >
                 {enviandoNF ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
-                Emitir NF e fechar mês
+                {mesNFEmitida ? 'Substituir NF' : 'Anexar NF'}
               </button>
             </div>
           </div>
@@ -1569,8 +1568,8 @@ export default function ClienteDetailPage() {
             </div>
           ) : (
             <button
-              onClick={() => { if (!mesAprovado) { setEstoqueInput(String(volumeInicial)); setEditandoEstoque(true) } }}
-              disabled={mesAprovado}
+              onClick={() => { if (!mesBloqueado) { setEstoqueInput(String(volumeInicial)); setEditandoEstoque(true) } }}
+              disabled={mesBloqueado}
               className="text-left w-full"
             >
               <p className="text-3xl font-bold text-[#0d1b2e]">{volumeInicial}</p>
@@ -1841,10 +1840,10 @@ export default function ClienteDetailPage() {
                             value={fatorLocal[mov.id] ?? String(mov.regra_fator_pallet ?? cliente?.regra_fator_pallet ?? 1.2)}
                             onChange={e => setFatorLocal(prev => ({ ...prev, [mov.id]: e.target.value }))}
                             onKeyDown={e => { if (e.key === 'Enter') salvarFatorPallet(mov.id, parseFloat((e.target as HTMLInputElement).value)) }}
-                            disabled={mesAprovado || cancelada}
+                            disabled={mesBloqueado || cancelada}
                             className="w-14 text-right border border-gray-200 rounded-lg px-1 py-1 text-xs font-semibold text-[#0d1b2e] focus:outline-none focus:ring-2 focus:ring-[#0d1b2e]/10 disabled:bg-gray-50 disabled:text-gray-400"
                           />
-                          {!(mesAprovado || cancelada) && (
+                          {!(mesBloqueado || cancelada) && (
                             <button
                               onClick={() => {
                                 const el = document.getElementById(`fator-mov-${mov.id}`) as HTMLInputElement | null
@@ -2061,10 +2060,10 @@ export default function ClienteDetailPage() {
                             value={fatorLocal[mov.id] ?? String(mov.regra_fator_pallet ?? cliente?.regra_fator_pallet ?? 1.2)}
                             onChange={e => setFatorLocal(prev => ({ ...prev, [mov.id]: e.target.value }))}
                             onKeyDown={e => { if (e.key === 'Enter') salvarFatorPallet(mov.id, parseFloat((e.target as HTMLInputElement).value)) }}
-                            disabled={mesAprovado}
+                            disabled={mesBloqueado}
                             className="w-14 text-right border border-amber-200 rounded-lg px-1 py-1 text-xs font-semibold text-amber-800 focus:outline-none focus:ring-2 focus:ring-amber-300 disabled:bg-gray-50 disabled:text-gray-400"
                           />
-                          {!mesAprovado && (
+                          {!mesBloqueado && (
                             <button
                               onClick={() => {
                                 const el = document.getElementById(`fator-sep-${mov.id}`) as HTMLInputElement | null
@@ -2082,7 +2081,7 @@ export default function ClienteDetailPage() {
                       <td className="px-4 py-3 text-right font-bold text-amber-700">{volume.toFixed(2)}</td>
                       <td className="px-4 py-3 text-right font-semibold text-[#0d1b2e]">{formatarMoeda(total)}</td>
                       <td className="px-4 py-3 text-center">
-                        {!mesAprovado && (
+                        {!mesBloqueado && (
                           separacaoComPallet.has(mov.id) ? (
                             <button
                               onClick={() => alternarPallet(mov.id, false)}
@@ -2212,10 +2211,10 @@ export default function ClienteDetailPage() {
                             value={fatorLocal[exc.movId] ?? String(exc.fator)}
                             onChange={e => setFatorLocal(prev => ({ ...prev, [exc.movId]: e.target.value }))}
                             onKeyDown={e => { if (e.key === 'Enter') salvarFatorPallet(exc.movId, parseFloat((e.target as HTMLInputElement).value)) }}
-                            disabled={mesAprovado}
+                            disabled={mesBloqueado}
                             className="w-14 text-right border border-amber-200 rounded-lg px-1 py-1 text-xs font-semibold text-amber-800 focus:outline-none focus:ring-2 focus:ring-amber-300 disabled:bg-gray-50 disabled:text-gray-400"
                           />
-                          {!mesAprovado && (
+                          {!mesBloqueado && (
                             <button
                               onClick={() => {
                                 const el = document.getElementById(`fator-exc-${exc.movId}`) as HTMLInputElement | null
@@ -2245,7 +2244,7 @@ export default function ClienteDetailPage() {
                       </td>
                       {/* Coluna "Pallet": promove o excedente a 1 pallet (toggle) */}
                       <td className="px-4 py-3 text-center">
-                        {!mesAprovado && (
+                        {!mesBloqueado && (
                           exc.status === 'pallet' ? (
                             <button
                               onClick={() => alternarExcedente(exc.movId, 'normal')}
@@ -2523,7 +2522,7 @@ export default function ClienteDetailPage() {
                             value={fatorLocal[mov.id] ?? String(mov.regra_fator_pallet ?? cliente?.regra_fator_pallet ?? 1.2)}
                             onChange={e => setFatorLocal(prev => ({ ...prev, [mov.id]: e.target.value }))}
                             onBlur={e => salvarFatorPallet(mov.id, parseFloat(e.target.value))}
-                            disabled={mesAprovado}
+                            disabled={mesBloqueado}
                             className="w-14 text-right border border-gray-200 rounded-lg px-1 py-1 text-xs font-semibold text-[#0d1b2e] focus:outline-none focus:ring-2 focus:ring-[#0d1b2e]/10 disabled:bg-gray-50 disabled:text-gray-400"
                           />
                         </td>
@@ -2536,8 +2535,8 @@ export default function ClienteDetailPage() {
                             step="0.01"
                             value={vmLocal}
                             onChange={e => setManuseioLocal(prev => ({ ...prev, [mov.id]: e.target.value }))}
-                            onBlur={() => !mesAprovado && salvarManuseio(mov.id)}
-                            disabled={mesAprovado}
+                            onBlur={() => !mesBloqueado && salvarManuseio(mov.id)}
+                            disabled={mesBloqueado}
                             className="w-16 text-right border border-gray-200 rounded-lg px-2 py-1 text-sm font-semibold text-[#0d1b2e] focus:outline-none focus:ring-2 focus:ring-[#0d1b2e]/10 disabled:bg-gray-50 disabled:text-gray-400"
                           />
                         </div>
@@ -2572,7 +2571,7 @@ export default function ClienteDetailPage() {
               <p className="text-xs text-gray-400">Subtotal</p>
               <p className="text-xl font-bold text-[#0d1b2e]">{formatarMoeda(totalCobrancasAdicionais)}</p>
             </div>
-            {!mesAprovado && (
+            {!mesBloqueado && (
               <button
                 onClick={() => setAdicionandoCobranca(v => !v)}
                 className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg border border-blue-200 text-blue-600 hover:bg-blue-50 transition-colors"
@@ -2636,7 +2635,7 @@ export default function ClienteDetailPage() {
                 <tr className="bg-gray-50 text-gray-500 text-xs uppercase tracking-wider">
                   <th className="px-4 py-3 text-left">Descrição</th>
                   <th className="px-4 py-3 text-right">Valor</th>
-                  {!mesAprovado && <th className="px-4 py-3 text-center w-16" />}
+                  {!mesBloqueado && <th className="px-4 py-3 text-center w-16" />}
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-50">
@@ -2644,7 +2643,7 @@ export default function ClienteDetailPage() {
                   <tr key={c.id} className="hover:bg-gray-50">
                     <td className="px-4 py-3 text-gray-700">{c.descricao}</td>
                     <td className="px-4 py-3 text-right font-semibold text-[#0d1b2e]">{formatarMoeda(c.valor)}</td>
-                    {!mesAprovado && (
+                    {!mesBloqueado && (
                       <td className="px-4 py-3 text-center">
                         <button
                           onClick={() => excluirCobranca(c.id)}
@@ -2662,7 +2661,7 @@ export default function ClienteDetailPage() {
                 <tr className="border-t-2 border-gray-200 bg-gray-50">
                   <td className="px-4 py-3 text-sm font-semibold text-gray-600">Total cobranças adicionais</td>
                   <td className="px-4 py-3 text-right font-bold text-emerald-700 text-base">{formatarMoeda(totalCobrancasAdicionais)}</td>
-                  {!mesAprovado && <td />}
+                  {!mesBloqueado && <td />}
                 </tr>
               </tfoot>
             </table>

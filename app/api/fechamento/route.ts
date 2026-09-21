@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getServerClient } from '@/lib/supabase'
+import { getUsuarioAtual } from '@/lib/admin-auth'
 
 export const dynamic = 'force-dynamic'
 
@@ -19,10 +20,13 @@ export async function GET(request: NextRequest) {
   return NextResponse.json(data)
 }
 
-// POST /api/fechamento — admin fecha o mês (sem NF, aguarda aprovação do cliente)
+// POST /api/fechamento — admin fecha o mês: a competência fica travada para alterações
 // Body JSON: { cliente_id, competencia }
 export async function POST(request: NextRequest) {
   try {
+    const usuario = await getUsuarioAtual()
+    if (!usuario) return NextResponse.json({ error: 'Não autorizado' }, { status: 401 })
+
     const { cliente_id, competencia } = await request.json()
 
     if (!cliente_id || !competencia) {
@@ -35,7 +39,13 @@ export async function POST(request: NextRequest) {
     const { data, error } = await supabase
       .from('fechamento_mensal')
       .upsert(
-        { cliente_id, competencia: competenciaDate, status: 'fechado' },
+        {
+          cliente_id,
+          competencia: competenciaDate,
+          status: 'fechado',
+          fechado_em: new Date().toISOString(),
+          fechado_por: usuario.nome || usuario.email,
+        },
         { onConflict: 'cliente_id,competencia' }
       )
       .select()
