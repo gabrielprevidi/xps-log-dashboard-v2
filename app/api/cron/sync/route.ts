@@ -152,13 +152,15 @@ export async function POST(request: NextRequest) {
   try {
     // ── 2. Marcas d'água ────────────────────────────────────────────────
     const { data: estadosBanco } = await supabase
-      .from('sync_estado').select('id, ultimo_uid, uid_validity, data_corte')
+      .from('sync_estado').select('id, ultimo_uid, uid_validity, data_corte, atualizado_em')
 
-    const marcas: Record<string, { ultimo_uid: number; uid_validity: number }> = {}
+    const marcas: Record<string, { ultimo_uid: number; uid_validity: number; atualizado_em?: string }> = {}
     let dataCorte = '2026-07-30'
     for (const e of estadosBanco ?? []) {
       if (e.data_corte) dataCorte = e.data_corte
-      if (e.id !== 'imap') marcas[e.id] = { ultimo_uid: e.ultimo_uid ?? 0, uid_validity: e.uid_validity ?? 0 }
+      if (e.id !== 'imap') {
+        marcas[e.id] = { ultimo_uid: e.ultimo_uid ?? 0, uid_validity: e.uid_validity ?? 0, atualizado_em: e.atualizado_em ?? undefined }
+      }
     }
 
     // ── 3. Leitura (readOnly — a caixa não é alterada) ──────────────────

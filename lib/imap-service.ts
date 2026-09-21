@@ -79,8 +79,13 @@ export interface OpcoesLeitura {
    * o resto entra na rodada seguinte.
    */
   orcamentoMs?: number
-  /** Marcas d'água por pasta: { 'INBOX': 175765, ... } */
-  marcas?: Record<string, { ultimo_uid: number; uid_validity: number }>
+  /**
+   * Marcas d'água por pasta: { 'INBOX': { ultimo_uid, uid_validity, atualizado_em } }.
+   * `atualizado_em` decide a ORDEM de varredura (ver abaixo) — sem ela, toda
+   * pasta com marca teria a mesma prioridade e a ordem cairia de volta na do
+   * servidor.
+   */
+  marcas?: Record<string, { ultimo_uid: number; uid_validity: number; atualizado_em?: string }>
   /** Primeira passagem: busca por data em vez de UID. */
   dataCorte?: string
   /**
@@ -229,17 +234,45 @@ export async function lerEmailsNFeImap(opcoes: OpcoesLeitura = {}): Promise<Resu
       } catch { /* pasta inacessível */ }
     }
 
-    for (const box of alvo) {
+    // Ordem de varredura: a pasta há mais tempo SEM avançar entra primeiro.
+    //
+    // Antes a ordem era a que o servidor IMAP devolvia (essencialmente fixa),
+    // e o `limite`/`orcamentoMs` da rodada eram um teto ÚNICO para a soma de
+    // todas as pastas. Uma pasta com muito volume novo (INBOX, "Notas
+    // Fedrigoni + XML") sozinha consumia a rodada inteira antes de chegar a
+    // vez de pastas mais abaixo na lista — e uma pasta perpetuamente por
+    // último nunca é atendida. Foi o que travou "Sent" no UID 24135 por seis
+    // dias (08 a 14/09/2026): a marca d'água simplesmente nunca teve vez de
+    // avançar, e nenhum alerta disparou porque OUTRAS pastas avançavam
+    // normalmente a cada rodada.
+    //
+    // A prioridade por "menos recentemente atualizada" garante que, rodada
+    // após rodada, toda pasta pendente eventualmente chega ao topo da fila —
+    // mesmo que outra, à frente dela na listagem do servidor, tenha volume
+    // muito maior. Pasta sem marca nenhuma (nunca vista) tem prioridade
+    // máxima, junto com pastas "novas" (pend === -1).
+    const pendentes = alvo.filter(b => (pendentesPorPasta.get(b.path) ?? 0) !== 0)
+    pendentes.sort((a, b) => {
+      const ta = marcas[a.path]?.atualizado_em ?? ''
+      const tb = marcas[b.path]?.atualizado_em ?? ''
+      return ta.localeCompare(tb) // '' (nunca sincronizada) vem antes de qualquer data
+    })
+
+    // Fatia de mensagens por pasta nesta rodada: teto para que UMA pasta com
+    // fila grande não consuma sozinha o `limite` inteiro e deixe as próximas
+    // pastas da lista (já ordenadas por prioridade) sem examinar nada. Mínimo
+    // de 3 para não fatiar demais quando há muitas pastas pendentes ao mesmo
+    // tempo — melhor examinar poucas mensagens de cada uma do que travar na
+    // primeira.
+    const limitePorPasta = pendentes.length > 0
+      ? Math.max(3, Math.ceil(limite / pendentes.length))
+      : limite
+
+    for (const box of pendentes) {
       if (resultado.mensagens_examinadas >= limite) break
       if (semTempo()) { resultado.interrompida_por_tempo = true; break }
 
       const marca = marcas[box.path]
-
-      // STATUS antes de abrir: custa ~5ms contra ~400ms do mailboxOpen. Pasta
-      // sem nada novo desde a última rodada nem chega a ser aberta — sem isto,
-      // varrer 28 pastas custava 11,4s a cada 15 minutos, mesmo sem trabalho.
-      // Já sabemos, da passagem de STATUS acima, se esta pasta tem novidade.
-      if (pendentesPorPasta.get(box.path) === 0) continue
 
       let mb
       try {
@@ -278,6 +311,10 @@ export async function lerEmailsNFeImap(opcoes: OpcoesLeitura = {}): Promise<Resu
 
       for (const uid of uids.sort((a, b) => a - b)) {
         if (resultado.mensagens_examinadas >= limite) break
+        // Teto por pasta: já processou sua fatia desta rodada — deixa a vez
+        // para a próxima pasta da fila de prioridade. O que sobrar aqui é
+        // reavaliado (e provavelmente priorizado) na rodada seguinte.
+        if (estado.examinadas >= limitePorPasta) break
         // Orçamento de tempo: para antes de estourar o limite da Vercel. O que
         // sobrou fica para a próxima rodada, sem perda nem retrabalho.
         if (semTempo()) { resultado.interrompida_por_tempo = true; break }
