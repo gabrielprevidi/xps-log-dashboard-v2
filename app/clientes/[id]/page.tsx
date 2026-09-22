@@ -78,6 +78,7 @@ interface Cliente {
   cobrar_manuseio: boolean
   cobrar_separacao_sacaria: boolean
   modo_calculo?: string | null
+  somar_armazenagem_no_total?: boolean | null
 }
 
 interface CobrancaAdicional {
@@ -501,6 +502,7 @@ export default function ClienteDetailPage() {
     cobrar_manuseio: cliente?.cobrar_manuseio ?? true,
     cobrar_separacao_sacaria: cliente?.cobrar_separacao_sacaria ?? false,
     modo_calculo: cliente?.modo_calculo ?? null,
+    somar_armazenagem_no_total: cliente?.somar_armazenagem_no_total ?? false,
   }
 
   // movimentações ativas do mês (excluindo canceladas para cálculos)
@@ -705,6 +707,17 @@ export default function ClienteDetailPage() {
     const novoValor = !cliente.cobrar_separacao_sacaria
     try {
       const res = await fetch(`/api/clientes/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cobrar_separacao_sacaria: novoValor }) })
+      const data = await res.json()
+      if (data.error) throw new Error(data.error)
+      setCliente(data)
+    } catch (e: any) { alert('Erro ao atualizar: ' + e.message) }
+  }
+
+  async function salvarEdicao_ArmazenagemNoTotalToggle() {
+    if (!cliente) return
+    const novoValor = !cliente.somar_armazenagem_no_total
+    try {
+      const res = await fetch(`/api/clientes/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ somar_armazenagem_no_total: novoValor }) })
       const data = await res.json()
       if (data.error) throw new Error(data.error)
       setCliente(data)
@@ -2687,16 +2700,45 @@ export default function ClienteDetailPage() {
         {(() => {
           const manuseioEfetivo = (cliente?.cobrar_manuseio ?? true) ? totalManuseio : 0
           const grand = manuseioEfetivo + totalSeparacao + totalCobrancasAdicionais
-          if (grand === 0) return null
+          const somaArmazenagem = cliente?.somar_armazenagem_no_total === true
+          if (grand === 0 && !(somaArmazenagem && armazBase > 0)) return null
           const partes = [
+            somaArmazenagem && armazBase > 0 && 'armazenagem',
             manuseioEfetivo > 0 && 'manuseio',
             totalSeparacao > 0 && 'separação',
             totalCobrancasAdicionais > 0 && 'adicionais',
           ].filter(Boolean).join(' + ')
+
+          // Cliente sem a flag (migration 024): total único, como sempre foi.
+          if (!somaArmazenagem) {
+            return (
+              <div className="mt-4 pt-4 border-t border-gray-100 flex items-center justify-between">
+                <span className="text-sm text-gray-500 font-medium">Total Geral ({partes})</span>
+                <span className="text-xl font-bold text-[#0d1b2e]">{formatarMoeda(grand)}</span>
+              </div>
+            )
+          }
+
+          // Com a flag: a armazenagem entra no total, e o imposto (que incide só
+          // sobre ela) faz o total existir em duas versões.
           return (
-            <div className="mt-4 pt-4 border-t border-gray-100 flex items-center justify-between">
-              <span className="text-sm text-gray-500 font-medium">Total Geral ({partes})</span>
-              <span className="text-xl font-bold text-[#0d1b2e]">{formatarMoeda(grand)}</span>
+            <div className="mt-4 pt-4 border-t border-gray-100 flex flex-col gap-2">
+              <div className="flex items-center justify-between">
+                <span className="text-sm text-gray-500">Armazenagem s/ imposto</span>
+                <span className="text-sm font-semibold text-[#0d1b2e]">{formatarMoeda(armazBase)}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-sm text-gray-500">Armazenagem c/ imposto ({aliquota}%)</span>
+                <span className="text-sm font-semibold text-emerald-700">{formatarMoeda(armazTotal)}</span>
+              </div>
+              <div className="mt-1 pt-3 border-t border-gray-100 flex items-center justify-between">
+                <span className="text-sm text-gray-500 font-medium">Total sem imposto ({partes})</span>
+                <span className="text-xl font-bold text-[#0d1b2e]">{formatarMoeda(grand + armazBase)}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-sm text-gray-500 font-medium">Total com imposto ({partes})</span>
+                <span className="text-xl font-bold text-emerald-700">{formatarMoeda(grand + armazTotal)}</span>
+              </div>
             </div>
           )
         })()}
@@ -2813,6 +2855,20 @@ export default function ClienteDetailPage() {
                   className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${cliente?.cobrar_separacao_sacaria ? 'bg-amber-500' : 'bg-gray-200'}`}
                 >
                   <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${cliente?.cobrar_separacao_sacaria ? 'translate-x-6' : 'translate-x-1'}`} />
+                </button>
+              </div>
+              {/* Toggle Armazenagem no Total Geral */}
+              <div className="mt-3 flex items-center justify-between p-3 bg-emerald-50 rounded-xl border border-emerald-100">
+                <div>
+                  <p className="text-sm font-medium text-gray-700">Armazenagem no Total Geral</p>
+                  <p className="text-xs text-gray-400 mt-0.5">Soma a armazenagem ao total da cobrança e exibe os totais sem e com imposto</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => salvarEdicao_ArmazenagemNoTotalToggle()}
+                  className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${cliente?.somar_armazenagem_no_total ? 'bg-emerald-500' : 'bg-gray-200'}`}
+                >
+                  <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${cliente?.somar_armazenagem_no_total ? 'translate-x-6' : 'translate-x-1'}`} />
                 </button>
               </div>
             </div>

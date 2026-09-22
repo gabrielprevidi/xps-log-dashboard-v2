@@ -1521,6 +1521,7 @@ export async function atualizarCliente(id: string, dados: {
   cobrar_manuseio?: boolean
   cobrar_separacao_sacaria?: boolean
   modo_calculo?: string
+  somar_armazenagem_no_total?: boolean
 }, ator?: Ator) {
   // Cadastro mudou: a próxima identificação precisa reler (ver limparCacheIdentificacao).
   limparCacheIdentificacao()

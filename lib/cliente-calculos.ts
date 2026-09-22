@@ -20,6 +20,8 @@ export interface ClienteCalc {
   cobrar_manuseio?: boolean | null
   cobrar_separacao_sacaria?: boolean | null
   modo_calculo?: string | null
+  /** Soma a armazenagem ao Total Geral (ver migration 024). Hoje só a Alphalum. */
+  somar_armazenagem_no_total?: boolean | null
 }
 
 /**
@@ -131,6 +133,16 @@ export interface ResultadoMes {
   manuseioEfetivo: number
   totalCobrancas: number
   totalGeral: number
+  /**
+   * Totais com a armazenagem incluída, para cliente com
+   * `somar_armazenagem_no_total`. O imposto incide só na armazenagem —
+   * separação, manuseio e adicionais entram cheios nos dois.
+   * Sem a flag, ambos repetem `totalGeral`.
+   */
+  totalSemImposto: number
+  totalComImposto: number
+  /** true quando a armazenagem está somada nos dois totais acima. */
+  armazenagemNoTotal: boolean
 }
 
 /**
@@ -270,11 +282,18 @@ export function calcularMesCliente(args: {
   const totalCobrancas = cobrancas.reduce((s, c) => s + Number(c.valor), 0)
   const totalGeral = manuseioEfetivo + totalSeparacao + totalCobrancas
 
+  // Armazenagem no total (migration 024). O imposto é da armazenagem, então só
+  // a parcela dela muda entre os dois totais.
+  const armazenagemNoTotal = cliente.somar_armazenagem_no_total === true
+  const totalSemImposto = armazenagemNoTotal ? totalGeral + armazBase : totalGeral
+  const totalComImposto = armazenagemNoTotal ? totalGeral + armazTotal : totalGeral
+
   return {
     mes, volumeInicial, valorPallet, aliquota, movsTodasMes, movsContab,
     movsSeparacao, excessos, totalEntradas, totalSaidas, saldoFinal, ppPico,
     armazBase, armazTotal, totalSeparacao, totalManuseio, manuseioEfetivo,
-    totalCobrancas, totalGeral,
+    totalCobrancas, totalGeral, totalSemImposto, totalComImposto,
+    armazenagemNoTotal,
   }
 }
 
