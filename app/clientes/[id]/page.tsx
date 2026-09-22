@@ -14,7 +14,7 @@ import {
   ResponsiveContainer, LabelList, Legend,
 } from 'recharts'
 import { formatarMoeda, calcularPallets } from '@/lib/calculations'
-import { valorPalletEfetivo } from '@/lib/cliente-calculos'
+import { valorPalletEfetivo, calcularMesCliente } from '@/lib/cliente-calculos'
 
 // ─────────────────────────────── types ───────────────────────────────
 
@@ -487,6 +487,21 @@ export default function ClienteDetailPage() {
     ...todasMovs.map(m => anoMesDeMovimentacao(m)).filter(Boolean),
     mesAtual,
   ])).sort().reverse()
+
+  // Meses em ordem ascendente — o carry-over do estoque inicial depende da ordem.
+  const mesesHistoricoAsc = [...mesesComDados].sort()
+
+  // Cliente no formato que `calcularMesCliente` espera. Enquanto o fetch não
+  // volta, `cliente` é null; os padrões aqui são os mesmos usados nos cartões
+  // do mês (fator 1,2 · imposto 2% · manuseio cobrado).
+  const clienteCalc = {
+    valor_pallet: cliente?.valor_pallet ?? null,
+    aliquota_imposto: cliente?.aliquota_imposto ?? null,
+    regra_fator_pallet: cliente?.regra_fator_pallet ?? null,
+    cobrar_manuseio: cliente?.cobrar_manuseio ?? true,
+    cobrar_separacao_sacaria: cliente?.cobrar_separacao_sacaria ?? false,
+    modo_calculo: cliente?.modo_calculo ?? null,
+  }
 
   // movimentações ativas do mês (excluindo canceladas para cálculos)
   const movsDoMesAtivas = todasMovs.filter(m =>
@@ -2706,29 +2721,22 @@ export default function ClienteDetailPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-50">
-                {[...mesesComDados].sort().map(mes => {
-                  const movsM = todasMovs.filter(m => anoMesDeMovimentacao(m) === mes && !m.cancelada)
-                  const saldoM = saldosMensais.find(s => s.competencia.slice(0, 7) === mes)
-                  const mesesOrdenados = [...mesesComDados].sort()
-                  const idx = mesesOrdenados.indexOf(mes)
-                  let volIni = 0
-                  if (saldoM) {
-                    volIni = saldoM.volume_inicial
-                  } else if (idx > 0) {
-                    const mesAnt = mesesOrdenados[idx - 1]
-                    const saldoAnt = saldosMensais.find(s => s.competencia.slice(0, 7) === mesAnt)
-                    const volIniAnt = saldoAnt?.volume_inicial ?? 0
-                    const movsAnt = todasMovs.filter(m => anoMesDeMovimentacao(m) === mesAnt && !m.cancelada)
-                    volIni = volIniAnt + movsAnt.reduce((s, m) => s + (m.pallets_entrada || 0), 0) - movsAnt.reduce((s, m) => s + (m.pallets_saida || 0), 0)
-                  }
-                  const ent = movsM.reduce((s, m) => s + (m.pallets_entrada || 0), 0)
-                  const sai = movsM.reduce((s, m) => s + (m.pallets_saida || 0), 0)
-                  const saldoFinalM = volIni + ent - sai
-                  const pico = calcPPPico(volIni, movsM)
-                  const vp = valorPalletEfetivo({ modoCalculo: cliente?.modo_calculo, ppPico: pico, valorManual: saldoM?.valor_pallet, valorCliente: cliente?.valor_pallet })
-                  const iq = saldoM?.percentual_imposto ?? cliente?.aliquota_imposto ?? 2
-                  const base = pico * vp
-                  const total = base * (1 + iq / 100)
+                {mesesHistoricoAsc.map(mes => {
+                  // Mesma função que alimenta os cartões do mês selecionado. Antes esta
+                  // tabela recalculava tudo aqui com os pallets crus da movimentação,
+                  // ignorando a separação de sacaria e a recontagem por floor(ton/fator)
+                  // — para cliente com cobrar_separacao_sacaria a linha do histórico não
+                  // fechava com o mês aberto logo acima.
+                  const r = calcularMesCliente({
+                    mes,
+                    todasMovs,
+                    saldos: saldosMensais,
+                    cobrancas: [],
+                    cliente: clienteCalc,
+                    mesesAsc: mesesHistoricoAsc,
+                  })
+                  const { volumeInicial: volIni, totalEntradas: ent, totalSaidas: sai } = r
+                  const { saldoFinal: saldoFinalM, ppPico: pico, armazBase: base, armazTotal: total } = r
                   const isAtual = mes === mesAtual
                   return (
                     <tr
