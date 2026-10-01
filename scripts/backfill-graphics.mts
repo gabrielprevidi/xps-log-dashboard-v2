@@ -151,6 +151,9 @@ await client.logout()
 // ── 3. Classificação e conversão ─────────────────────────────────────────
 const dataDe = (m: Mov) => m.data_entrada || m.data_saida || ''
 const dims: DimsPorSku = new Map()
+// Dimensões já cadastradas (têm prioridade — podem ter sido informadas à mão)
+const { data: skusCad } = await supabase.from('graphics_sku').select('codigo, largura_mm, comprimento_m').eq('cliente_id', cli.id)
+for (const s of skusCad ?? []) dims.set(s.codigo, { larguraMm: s.largura_mm, comprimentoM: s.comprimento_m != null ? Number(s.comprimento_m) : null })
 for (const l of lidas) aprenderDims(dims, l.nfe.itens)
 
 const graphics = lidas.filter(l => ehNotaGraphics(l.nfe)).sort((a, b) => dataDe(a.mov).localeCompare(dataDe(b.mov)))
