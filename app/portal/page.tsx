@@ -159,7 +159,7 @@ export default function PortalPage() {
     ? calcularMesCliente({ mes: mesAtual, todasMovs: movs, saldos, cobrancas, cliente, mesesAsc })
     : null
 
-  const temCategorias = produtos.length > 0
+  const temCategorias = cliente?.modo_calculo !== 'avery' && produtos.length > 0
   const dadosGrafico = calc ? gerarGrafico(calc.volumeInicial, calc.movsContab, mesAtual) : []
   const picoValor = dadosGrafico.reduce((mx, d) => (d.saldo > mx ? d.saldo : mx), 0)
 

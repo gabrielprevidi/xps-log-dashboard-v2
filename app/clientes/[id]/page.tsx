@@ -15,6 +15,8 @@ import {
 } from 'recharts'
 import { formatarMoeda, calcularPallets } from '@/lib/calculations'
 import { valorPalletEfetivo, calcularMesCliente } from '@/lib/cliente-calculos'
+import GraphicsPanel from '@/components/dashboard/GraphicsPanel'
+import { ehMovGraphics } from '@/lib/graphics-saldo'
 
 // ─────────────────────────────── types ───────────────────────────────
 
@@ -543,7 +545,9 @@ export default function ClienteDetailPage() {
 
   // ── filtro visual da tabela de movimentações (tipo e/ou categoria) ──
   // Apenas filtra a EXIBIÇÃO da tabela — não altera totais, gráfico nem cobrança.
-  const movsTabelaBase = movsDoMesTodas.filter(m => !idsSeparacao.has(m.id) || separacaoComPallet.has(m.id))
+  // Linhas sintéticas do Graphics (id "gfx:…") entram nos cálculos, mas não na tabela de NF-e:
+  // não são editáveis — o detalhe fica no painel Graphics.
+  const movsTabelaBase = movsDoMesTodas.filter(m => !ehMovGraphics(m) && (!idsSeparacao.has(m.id) || separacaoComPallet.has(m.id)))
   const categoriasDisponiveis = Array.from(
     new Set(movsTabelaBase.map(m => m.produto_nome || '(Sem categoria)'))
   ).sort((a, b) => a === '(Sem categoria)' ? 1 : b === '(Sem categoria)' ? -1 : a.localeCompare(b))
@@ -652,7 +656,8 @@ export default function ClienteDetailPage() {
   const armazTotal = armazBase * (1 + aliquota / 100)
 
   // ── resumo por categoria de produto ──
-  const temCategorias = clienteProdutos.length > 0
+  // Avery (modo 'avery'): sem quebra por categoria de produto — Graphics é controlado à parte, por SKU
+  const temCategorias = cliente?.modo_calculo !== 'avery' && clienteProdutos.length > 0
   const resumoPorCategoria = (() => {
     if (!temCategorias) return []
     const map = new Map<string, { nome: string; entradas: number; entradasTon: number; saidas: number; saidasTon: number }>()
@@ -1706,6 +1711,11 @@ export default function ClienteDetailPage() {
           <p className="text-sm text-gray-400 text-center py-10">Sem movimentações para exibir.</p>
         )}
       </div>
+
+      {/* Graphics — só Avery Dennison; contagem por caixas, separada das movimentações por volume */}
+      {cliente?.modo_calculo === 'avery' && cliente.cnpj.replace(/\D/g, '') === '43999630000124' && (
+        <GraphicsPanel clienteId={id} mesAtual={mesAtual} />
+      )}
 
       {/* Movimentações do mês */}
       <div className="bg-white rounded-2xl border border-gray-100 p-6 mb-6">

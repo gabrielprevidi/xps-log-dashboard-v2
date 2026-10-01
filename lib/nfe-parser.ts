@@ -23,6 +23,9 @@ export interface DadosNFe {
   // que é opcional e muitas NF-e deixam em branco, qVol é preenchido de forma consistente.
   // Usado por clientes cujo modo_calculo não depende de peso (fedrigoni, tecnia, avery).
   quantidade_especie?: number | null
+  // Informações complementares (infCpl) + do fisco (infAdFisco) concatenadas.
+  // Identifica notas Graphics da Avery — o produto só aparece aqui, não nos itens.
+  info_adicional?: string
 }
 
 export interface ItemNFe {
@@ -97,6 +100,10 @@ export async function parseNFe(xmlString: string): Promise<DadosNFe | null> {
     const qVol = qVolRaw ? parseFloat(qVolRaw.replace(',', '.')) : NaN
     const quantidade_especie = !isNaN(qVol) && qVol > 0 ? qVol : null
 
+    const infAdic = infNFe.infAdic?.[0]
+    const info_adicional = [extrairTexto(infAdic?.infAdFisco), extrairTexto(infAdic?.infCpl)]
+      .filter(Boolean).join(' ').replace(/\s+/g, ' ').trim()
+
     return {
       chave_nfe,
       numero_nfe: extrairTexto(ide?.nNF),
@@ -112,6 +119,7 @@ export async function parseNFe(xmlString: string): Promise<DadosNFe | null> {
       peso_liquido_total: pesoLiq,
       unidade: itens[0]?.unidade || 'TON',
       quantidade_especie,
+      info_adicional,
     }
   } catch (error) {
     console.error('Erro ao parsear NFe XML:', error)

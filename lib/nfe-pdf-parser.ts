@@ -40,6 +40,24 @@ async function extrairTextoPDF(buffer: Buffer): Promise<string> {
   return result.text
 }
 
+/**
+ * Quantidade do item logo após a unidade. A forma com separador de milhar
+ * ("2.055,0000" = 2.055) vem ANTES da simples: sem isso o regex parava no ponto
+ * e lia 2,055 — 1.000× menor. A simples cobre "0,6000", "120,0000" etc.
+ */
+const QTD_PAT = '\\d{1,3}(?:\\.\\d{3})+,\\d{1,4}|\\d{1,4}[.,]\\d{1,4}'
+
+function qtdDoDanfe(txt: string): number {
+  const t = /\.\d{3},/.test(txt) ? txt.replace(/\./g, '').replace(',', '.') : txt.replace(',', '.')
+  return parseFloat(t) || 0
+}
+
+/**
+ * Código de produto alfanumérico com hífen colado à descrição, como nos DANFEs
+ * da Avery: "AAT527-FG8SLP" → código "AAT527-FG8", descrição "SLP...".
+ */
+const CODIGO_HIFEN = /^([A-Z]{2,5}\d{2,5}-[A-Z]{1,4}\d{1,2})(.+)$/
+
 export async function parseNFePDF(buffer: Buffer): Promise<DadosNFe | null> {
   try {
     return parseTextoNFe(await extrairTextoPDF(buffer))
@@ -376,7 +394,7 @@ function parseTextoNFe(texto: string): DadosNFe | null {
     //   Linha B: [NCM 8d][extra][CFOP 4d][UNIDADE][QTD]  ex: "250830000 005102TON0,60004.254,04..."
     const itens: import('./nfe-parser').ItemNFe[] = []
     const linhas = texto.split(/\r?\n/)
-    const UNIT_PAT = '(?:TON|KGS?|SC|SAC|UN|CX|PC|BAG|GR?|M2|L|MT)'
+    const UNIT_PAT = '(?:TON|KGS?|SC|SAC|UN|CX|PC|BAG|GR?|M2|L|MT|EA)'
 
     for (let i = 0; i < linhas.length; i++) {
       const linha = linhas[i].trim()
@@ -397,9 +415,9 @@ function parseTextoNFe(texto: string): DadosNFe | null {
         // demais em descrição terminada em número: "... - SKU 60.0820" seguido do
         // NCM 25083000 era lido como "08202508" (NF-e 248 da Alphalum).
         const ncmBloco = linha.match(new RegExp(`(\\d{8})\\d\\s+\\d{2}\\d{4}(?=${UNIT_PAT})`, 'i'))
-        const uq = linha.match(new RegExp(`(${UNIT_PAT})(\\d{1,4}[.,]\\d{1,4})`, 'i'))
+        const uq = linha.match(new RegExp(`(${UNIT_PAT})(${QTD_PAT})`, 'i'))
         if (cdn && uq) {
-          const quantidade = parseFloat(uq[2].replace(',', '.')) || 0
+          const quantidade = qtdDoDanfe(uq[2])
           const cfopM = linha.match(new RegExp(`(\\d{4})${UNIT_PAT}`, 'i'))
           if (quantidade > 0) {
             const descricao = cdn[2].replace(/\s*-?\s*SKU.*$/i, '').trim() || cdn[2].trim()
@@ -425,12 +443,12 @@ function parseTextoNFe(texto: string): DadosNFe | null {
       const ncm = linha.slice(0, 8)
 
       // Extrai unidade + quantidade: "TON0,6000" ou "KG1,500"
-      const unitQtyRe = new RegExp(`(${UNIT_PAT})(\\d{1,4}[.,]\\d{1,4})`, 'i')
+      const unitQtyRe = new RegExp(`(${UNIT_PAT})(${QTD_PAT})`, 'i')
       const uqMatch = linha.match(unitQtyRe)
       if (!uqMatch) continue
 
       const unidade = uqMatch[1].toUpperCase()
-      const quantidade = parseFloat(uqMatch[2].replace(',', '.')) || 0
+      const quantidade = qtdDoDanfe(uqMatch[2])
       if (quantidade <= 0) continue
 
       // CFOP: 4 dígitos imediatamente antes da unidade
@@ -457,6 +475,8 @@ function parseTextoNFe(texto: string): DadosNFe | null {
         // espaço no meio o padrão casaria continuação de descrição ("1.37 X 50M" da
         // Avery), truncando o item.
         if (/^\d{1,8}\.\d{2,8}[A-Za-zÀ-ú]/.test(prev)) break
+        // Código alfanumérico com hífen colado à descrição (Avery: "AAT527-FG8SLP")
+        if (CODIGO_HIFEN.test(prev)) break
       }
       const codigoDesc = partes.join('')
       if (!codigoDesc) continue
@@ -473,7 +493,11 @@ function parseTextoNFe(texto: string): DadosNFe | null {
       // com ponto ("11.0009ALUM 9 TM 1.200 KG BIG BAG"); sem ela o item ficava
       // com código sintético PROD_n e a descrição inteira virava "descrição".
       const numColado = semNumItem.match(/^(\d{1,8}\.\d{1,8}|\d{4,12})([A-Za-z].*)/)
-      if (numColado) {
+      const hifenColado = semNumItem.match(CODIGO_HIFEN)
+      if (hifenColado) {
+        codigo = hifenColado[1]
+        descricao = hifenColado[2].trim()
+      } else if (numColado) {
         codigo = numColado[1]
         descricao = numColado[2].trim()
       } else {
@@ -556,6 +580,13 @@ function parseTextoNFe(texto: string): DadosNFe | null {
     }
     if (quantidade_especie !== null && quantidade_especie <= 0) quantidade_especie = null
 
+    // --- Informações complementares / adicionais (texto livre do emitente) ---
+    // Entre o rótulo "INFORMAÇÕES COMPLEMENTARES…" e o bloco seguinte do DANFE.
+    // Usado para identificar notas Graphics da Avery ("… OSASCO GRAPHICS …").
+    let info_adicional = ''
+    const infM = texto.match(/INFORMA[ÇC][ÕO]ES COMPLEMENTARES[^\n]*\n([\s\S]*?)(?:\nC[ÁA]LCULO DO ISSQN|$)/i)
+    if (infM) info_adicional = infM[1].replace(/\s+/g, ' ').trim().slice(0, 1500)
+
     return {
       chave_nfe,
       numero_nfe,
@@ -570,6 +601,7 @@ function parseTextoNFe(texto: string): DadosNFe | null {
       itens,
       peso_liquido_total,
       unidade,
+      info_adicional,
       texto_pdf: texto,  // texto bruto completo para fallback de keywords
       codigo_operacao_danfe,
       quantidade_especie,

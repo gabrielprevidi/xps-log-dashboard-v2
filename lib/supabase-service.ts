@@ -3,6 +3,8 @@
  * Usada apenas no servidor (API routes do Next.js).
  */
 
+import { ehClienteAveryDennison, ehNotaGraphics, tipoGraphics, gravarGraphics } from './graphics'
+import { movsOcupacaoGraphics, type GfxSku, type GfxMov } from './graphics-saldo'
 import { createClient } from '@supabase/supabase-js'
 import type { EmailProcessado, AnexoXML } from './anexos'
 import type { ItemNFe } from './nfe-parser'
@@ -1257,6 +1259,32 @@ export async function persistirAnexo(
       resultado.erros.push(`Avery NF-e ${nfe?.numero_nfe ?? anexo.nome_arquivo}: ${motivoAvery}`)
       return comArquivo(null)
     }
+    // Graphics (só Avery Dennison): contabilizado em caixas por SKU, fora de
+    // `movimentacoes`. Se não der para converter (ex.: dimensão do rolo
+    // desconhecida), segue o fluxo normal abaixo — a nota não some da cobrança
+    // — e registra o erro para correção.
+    if (nfe && ehClienteAveryDennison(clienteCnpj) && ehNotaGraphics(nfe)) {
+      const tipoGfx = tipoGraphics(nfe.natureza_operacao ?? '').tipo
+      if (!tipoGfx || !nfe.data_emissao) {
+        resultado.erros.push(
+          `Avery Graphics NF-e ${nfe.numero_nfe}: data/operação não identificadas — gravada como Avery comum, revisar.`
+        )
+      } else {
+        const g = await gravarGraphics(supabase, {
+          clienteId, arquivoNfeId: arquivoSalvo.id, nfe,
+          tipo: tipoGfx, data: nfe.data_emissao,
+          paletsDeclarados: nfe.quantidade_especie ?? null,
+        })
+        if (g.erro) {
+          resultado.erros.push(
+            `Avery Graphics NF-e ${nfe.numero_nfe}: ${g.erro} — gravada como Avery comum, revisar.`
+          )
+        } else {
+          resultado.movimentacoes_salvas++
+          return comArquivo(null)
+        }
+      }
+    }
     const volumesAvery = nfe?.quantidade_especie ?? null
     const valorVolumeAvery = clienteConfig?.valor_pallet ?? 40
     const aliquotaAvery = clienteConfig?.aliquota_imposto ?? 0
@@ -1507,7 +1535,29 @@ export async function buscarClientePorId(id: string) {
     .order('created_at', { ascending: false })
   if (movErr) throw movErr
 
-  return { cliente, movimentacoes: movimentacoes ?? [] }
+  // Avery Dennison: soma a ocupação de palets do Graphics (controle por caixas/SKU)
+  // às movimentações, como linhas sintéticas só de leitura (id "gfx:…"). Assim o
+  // pico de cobrança, o saldo, o histórico, o portal e a exportação já a contam.
+  const movsFinal = [...(movimentacoes ?? [])]
+  if (ehClienteAveryDennison(cliente?.cnpj)) {
+    const { data: skus } = await supabase
+      .from('graphics_sku').select('id, codigo, descricao, unidades_por_palet').eq('cliente_id', id).eq('ativo', true)
+    if (skus && skus.length > 0) {
+      const gmovs: GfxMov[] = []
+      const ids = skus.map((s: { id: string }) => s.id)
+      for (let o = 0; ; o += 1000) {
+        const { data } = await supabase
+          .from('graphics_movimentacoes')
+          .select('id, sku_id, arquivo_nfe_id, numero_nfe, tipo, data_mov, qtd_unidades, palets_declarados')
+          .in('sku_id', ids).order('data_mov', { ascending: true }).range(o, o + 999)
+        gmovs.push(...((data ?? []) as GfxMov[]))
+        if (!data || data.length < 1000) break
+      }
+      movsFinal.push(...(movsOcupacaoGraphics(skus as GfxSku[], gmovs, id) as typeof movsFinal))
+    }
+  }
+
+  return { cliente, movimentacoes: movsFinal }
 }
 
 export async function atualizarCliente(id: string, dados: {
