@@ -1548,7 +1548,7 @@ export async function buscarClientePorId(id: string) {
       for (let o = 0; ; o += 1000) {
         const { data } = await supabase
           .from('graphics_movimentacoes')
-          .select('id, sku_id, arquivo_nfe_id, numero_nfe, tipo, data_mov, qtd_unidades, palets_declarados')
+          .select('id, sku_id, arquivo_nfe_id, numero_nfe, tipo, data_mov, qtd_unidades, palets_declarados, inventario')
           .in('sku_id', ids).order('data_mov', { ascending: true }).range(o, o + 999)
         gmovs.push(...((data ?? []) as GfxMov[]))
         if (!data || data.length < 1000) break

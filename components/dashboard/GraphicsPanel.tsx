@@ -49,6 +49,7 @@ export default function GraphicsPanel({ clienteId, mesAtual }: { clienteId: stri
     .filter(m => m.data_mov.startsWith(mesAtual))
     .sort((a, b) => b.data_mov.localeCompare(a.data_mov))
   const temDados = movs.length > 0
+  const temAjuste = r.caixasAjuste !== 0 || r.linhas.some(l => l.ajustes !== 0)
 
   return (
     <div className="bg-white rounded-2xl border border-gray-100 p-6 mb-6">
@@ -124,6 +125,7 @@ export default function GraphicsPanel({ clienteId, mesAtual }: { clienteId: stri
                   <th className="px-3 py-2 text-right">Saldo inicial</th>
                   <th className="px-3 py-2 text-right">Entradas</th>
                   <th className="px-3 py-2 text-right">Saídas</th>
+                  {temAjuste && <th className="px-3 py-2 text-right" title="Ajuste de inventário físico">Ajuste</th>}
                   <th className="px-3 py-2 text-right">Saldo final</th>
                   <th className="px-3 py-2 text-right">Palets</th>
                   <th className="px-3 py-2 text-right">Faltam p/ liberar palet</th>
@@ -131,7 +133,7 @@ export default function GraphicsPanel({ clienteId, mesAtual }: { clienteId: stri
               </thead>
               <tbody>
                 {r.linhas.length === 0 && (
-                  <tr><td colSpan={8} className="px-3 py-6 text-center text-gray-400">Sem SKUs com saldo ou movimento neste mês.</td></tr>
+                  <tr><td colSpan={temAjuste ? 9 : 8} className="px-3 py-6 text-center text-gray-400">Sem SKUs com saldo ou movimento neste mês.</td></tr>
                 )}
                 {r.linhas.map(l => (
                   <tr key={l.sku.id} className="border-b border-gray-50">
@@ -140,6 +142,7 @@ export default function GraphicsPanel({ clienteId, mesAtual }: { clienteId: stri
                     <td className="px-3 py-2 text-right">{n(l.saldoInicio)}</td>
                     <td className="px-3 py-2 text-right text-emerald-700">{l.entradas ? `+${n(l.entradas)}` : '—'}</td>
                     <td className="px-3 py-2 text-right text-red-600">{l.saidas ? `−${n(l.saidas)}` : '—'}</td>
+                    {temAjuste && <td className="px-3 py-2 text-right text-gray-600">{l.ajustes ? `${l.ajustes > 0 ? '+' : '−'}${n(Math.abs(l.ajustes))}` : '—'}</td>}
                     <td className={`px-3 py-2 text-right font-semibold ${l.saldoFim < 0 ? 'text-amber-700' : ''}`}>{n(l.saldoFim)}</td>
                     <td className="px-3 py-2 text-right font-semibold text-[#0d1b2e]">{n(l.paletsFim)}</td>
                     <td className="px-3 py-2 text-right text-gray-500">{l.paletsFim > 0 ? l.faltamParaLiberar : '—'}</td>
@@ -153,6 +156,7 @@ export default function GraphicsPanel({ clienteId, mesAtual }: { clienteId: stri
                     <td className="px-3 py-2 text-right">{n(r.caixasInicio)}</td>
                     <td className="px-3 py-2 text-right">+{n(r.caixasEntrada)}</td>
                     <td className="px-3 py-2 text-right">−{n(r.caixasSaida)}</td>
+                    {temAjuste && <td className="px-3 py-2 text-right">{r.caixasAjuste >= 0 ? '+' : '−'}{n(Math.abs(r.caixasAjuste))}</td>}
                     <td className="px-3 py-2 text-right">{n(r.caixasFim)}</td>
                     <td className="px-3 py-2 text-right">{n(r.paletsFim)}</td>
                     <td />
@@ -184,8 +188,8 @@ export default function GraphicsPanel({ clienteId, mesAtual }: { clienteId: stri
                         <td className="px-3 py-1.5 whitespace-nowrap">{dataBr(m.data_mov)}</td>
                         <td className="px-3 py-1.5 font-mono">{m.numero_nfe ?? '—'}</td>
                         <td className="px-3 py-1.5 font-mono">{skuPorId.get(m.sku_id)?.codigo ?? '—'}</td>
-                        <td className="px-3 py-1.5">{m.tipo === 'entrada' ? 'Entrada' : m.tipo === 'saida' ? 'Saída' : 'Ajuste'}</td>
-                        <td className="px-3 py-1.5 text-right">{n(m.qtd_unidades)}</td>
+                        <td className="px-3 py-1.5">{m.inventario ? 'Inventário' : m.tipo === 'entrada' ? 'Entrada' : m.tipo === 'saida' ? 'Saída' : 'Ajuste'}</td>
+                        <td className="px-3 py-1.5 text-right">{m.tipo === 'ajuste' && m.qtd_unidades > 0 ? '+' : ''}{n(m.qtd_unidades)}</td>
                       </tr>
                     ))}
                   </tbody>

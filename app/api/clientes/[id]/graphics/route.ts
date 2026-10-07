@@ -25,7 +25,7 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
       for (let o = 0; ; o += 1000) {
         const { data, error } = await supabase
           .from('graphics_movimentacoes')
-          .select('id, sku_id, arquivo_nfe_id, numero_nfe, tipo, data_mov, qtd_unidades, palets_declarados')
+          .select('id, sku_id, arquivo_nfe_id, numero_nfe, tipo, data_mov, qtd_unidades, palets_declarados, inventario')
           .in('sku_id', ids.slice(i, i + 100))
           .order('data_mov', { ascending: true })
           .range(o, o + 999)

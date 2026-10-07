@@ -8,7 +8,9 @@
  *               de saída ACUMULADAS daquele produto, mesmo que o palet de origem
  *               fosse incompleto
  *   • ocupados = entrou − saiu, e zero quando não há mais caixas do SKU
- * Ajuste de inventário positivo conta como entrada; negativo, como saída.
+ * Ajuste comum positivo conta como entrada; negativo, como saída. O ajuste marcado
+ * como inventário físico é ponto de partida: o saldo contado vira a entrada e as
+ * saídas acumuladas recomeçam do zero.
  */
 
 export interface GfxSku {
@@ -27,6 +29,8 @@ export interface GfxMov {
   data_mov: string            // YYYY-MM-DD
   qtd_unidades: number        // ajuste vem com sinal
   palets_declarados: number | null
+  /** Ajuste que marca o inventário físico: a regra de palets recomeça dele. */
+  inventario?: boolean
 }
 
 export function deltaCaixas(m: Pick<GfxMov, 'tipo' | 'qtd_unidades'>): number {
@@ -37,11 +41,20 @@ export function deltaCaixas(m: Pick<GfxMov, 'tipo' | 'qtd_unidades'>): number {
 export interface AcumuladoSku { entrou: number; saiu: number }
 
 export function acumuladoSku(movs: GfxMov[], ateInclusive?: string, antesDe?: string): AcumuladoSku {
+  // Dentro do mesmo dia o inventário vem por último: a contagem já inclui as notas do dia.
+  const ordem = [...movs].sort((a, b) =>
+    a.data_mov.localeCompare(b.data_mov) || Number(!!a.inventario) - Number(!!b.inventario))
   let entrou = 0
   let saiu = 0
-  for (const m of movs) {
+  for (const m of ordem) {
     if (ateInclusive !== undefined && m.data_mov > ateInclusive) continue
     if (antesDe !== undefined && m.data_mov >= antesDe) continue
+    if (m.inventario) {
+      // Ponto de partida: o saldo contado vira a entrada; saídas acumuladas recomeçam do zero.
+      entrou = Math.max(0, entrou - saiu + m.qtd_unidades)
+      saiu = 0
+      continue
+    }
     const d = deltaCaixas(m)
     if (d > 0) entrou += d
     else saiu -= d
@@ -79,6 +92,7 @@ export interface ResumoGraphicsMes {
   caixasFim: number
   caixasEntrada: number
   caixasSaida: number
+  caixasAjuste: number
   paletsInicio: number
   paletsFim: number
   /** Palets que passaram a ser ocupados / foram liberados no mês. */
@@ -113,15 +127,18 @@ export function resumoGraphicsMes(skus: GfxSku[], movs: GfxMov[], competencia: s
   for (const sku of skus) {
     const doSku = movs.filter(m => m.sku_id === sku.id)
     const fator = sku.unidades_por_palet
-    const noMes = doSku.filter(m => m.data_mov >= ini && m.data_mov < fim)
-    const antes = acumuladoSku(doSku, undefined, ini)
+    const noMesBruto = doSku.filter(m => m.data_mov >= ini && m.data_mov < fim)
+    // Mês com inventário: a contagem é o estoque inicial; só contam as movimentações DEPOIS dela.
+    const dataInv = noMesBruto.filter(m => m.inventario).map(m => m.data_mov).sort().pop()
+    const noMes = dataInv ? noMesBruto.filter(m => m.data_mov > dataInv && !m.inventario) : noMesBruto
+    const antes = dataInv ? acumuladoSku(doSku, dataInv) : acumuladoSku(doSku, undefined, ini)
     const ate = acumuladoSku(doSku, undefined, fim)
     const saldoInicio = antes.entrou - antes.saiu
     const entradas = noMes.filter(m => m.tipo === 'entrada').reduce((s, m) => s + m.qtd_unidades, 0)
     const saidas = noMes.filter(m => m.tipo === 'saida').reduce((s, m) => s + m.qtd_unidades, 0)
     const ajustes = noMes.filter(m => m.tipo === 'ajuste').reduce((s, m) => s + m.qtd_unidades, 0)
     const saldoFim = ate.entrou - ate.saiu
-    if (saldoFim === 0 && saldoInicio === 0 && noMes.length === 0) continue   // SKU sem relação com o mês
+    if (saldoFim === 0 && saldoInicio === 0 && noMes.length === 0 && !dataInv) continue   // SKU sem relação com o mês
     if (saldoFim < 0) negativos.push(sku.codigo)
 
     // ocupação diária (fim de cada dia)
@@ -152,6 +169,7 @@ export function resumoGraphicsMes(skus: GfxSku[], movs: GfxMov[], competencia: s
     caixasFim: soma(l => l.saldoFim),
     caixasEntrada: soma(l => l.entradas),
     caixasSaida: soma(l => l.saidas),
+    caixasAjuste: soma(l => l.ajustes),
     paletsInicio: soma(l => l.paletsInicio),
     paletsFim: soma(l => l.paletsFim),
     paletsEntrada: soma(l => l.paletsEntradaMes),
