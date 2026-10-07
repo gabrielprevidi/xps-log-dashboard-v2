@@ -2,9 +2,10 @@
  * Carrega o inventário físico do Graphics como ponto de partida.
  *
  * Para cada SKU (planilha ∪ sistema) grava um ajuste `inventario = true` na data
- * do inventário, de valor (contagem − saldo do sistema na data), levando o saldo
- * à contagem. SKU que não está na planilha vale 0; SKU novo é criado.
- * Idempotente: regrava os ajustes de inventário daquela data.
+ * do inventário, de valor (contagem − saldo do sistema ANTES da data), levando o saldo
+ * à contagem. O inventário vale desde o início do dia: as movimentações dessa data em
+ * diante contam depois dele; as anteriores já estão dentro da contagem. SKU que não está na planilha vale 0; SKU novo é criado.
+ * Idempotente: substitui qualquer inventário anterior dos mesmos SKUs (outra data inclusive).
  *
  * Pré-requisito: migration 030 (coluna `inventario`) — só para --apply.
  * Seguro por padrão: sem --apply só simula e grava um relatório em backups/.
@@ -59,10 +60,10 @@ const movs: GfxMov[] = []
 for (let i = 0; i < ids.length; i += 100) {
   for (let o = 0; ; o += 1000) {
     const { data, error } = await supabase.from('graphics_movimentacoes')
-      .select('id, sku_id, arquivo_nfe_id, numero_nfe, tipo, data_mov, qtd_unidades, palets_declarados')
+      .select('id, sku_id, arquivo_nfe_id, numero_nfe, tipo, data_mov, qtd_unidades, palets_declarados, inventario')
       .in('sku_id', ids.slice(i, i + 100)).order('data_mov').range(o, o + 999)
     if (error) throw error
-    movs.push(...((data ?? []) as GfxMov[]).map(m => ({ ...m, qtd_unidades: Number(m.qtd_unidades) })))
+    movs.push(...((data ?? []) as GfxMov[]).filter(m => !m.inventario).map(m => ({ ...m, qtd_unidades: Number(m.qtd_unidades) })))
     if (!data || data.length < 1000) break
   }
 }
@@ -74,7 +75,7 @@ const plano: Plano[] = []
 for (const codigo of codigos) {
   const sku = porCodigo.get(codigo)
   const doSku = sku ? movs.filter(m => m.sku_id === sku.id) : []
-  const a = acumuladoSku(doSku, dataInv)        // notas até a data já estão na contagem; o inventário é o saldo final do dia
+  const a = acumuladoSku(doSku, undefined, dataInv)   // só o que veio ANTES da data; o inventário vale desde o início do dia
   const sistema = Math.round((a.entrou - a.saiu) * 1e4) / 1e4
   const contado = contagem.get(codigo)?.total ?? 0
   plano.push({
@@ -111,7 +112,7 @@ for (const p of plano) {
     if (error || !novo) { console.log(`ERRO criando SKU ${p.codigo}: ${error?.message}`); continue }
     skuId = novo.id
   }
-  await supabase.from('graphics_movimentacoes').delete().eq('sku_id', skuId).eq('inventario', true).eq('data_mov', dataInv)
+  await supabase.from('graphics_movimentacoes').delete().eq('sku_id', skuId).eq('inventario', true)   // substitui inventário anterior (qualquer data)
   const { error } = await supabase.from('graphics_movimentacoes').insert({
     sku_id: skuId, tipo: 'ajuste', data_mov: dataInv, qtd_unidades: p.delta, inventario: true,
     observacoes: `Inventário físico de ${dataInv.split('-').reverse().join('/')}: contagem ${p.contado}, sistema ${p.sistema}`,

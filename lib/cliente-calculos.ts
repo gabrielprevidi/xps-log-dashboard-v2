@@ -146,6 +146,37 @@ export interface ResultadoMes {
 }
 
 /**
+ * Estoque inicial de um mês: o saldo cadastrado à mão, ou o carry-over do mês anterior.
+ *
+ * `encadear`: quando o mês anterior também não tem saldo cadastrado, usa o inicial
+ * CALCULADO dele (recursivo) em vez de assumir 0. Sem isso, o inicial de um mês só
+ * enxerga a variação do mês anterior e perde todo o resto — em outubro/2026 a Avery
+ * ia de 6.291 para 742 pallets. Ligado só para a Avery: em Fedrigoni e Tecnia a
+ * mudança alteraria o inicial de meses antigos já cobrados.
+ */
+export function volumeInicialDoMes(args: {
+  mes: string
+  mesesAsc: string[]
+  saldos: SaldoCalc[]
+  todasMovs: MovCalc[]
+  encadear: boolean
+}): number {
+  const { mes, mesesAsc, saldos, todasMovs, encadear } = args
+  const manual = saldos.find(s => anoMesDe(s.competencia) === mes)
+  if (manual) return manual.volume_inicial
+  const idx = mesesAsc.indexOf(mes)
+  if (idx <= 0) return 0
+  const mesAnterior = mesesAsc[idx - 1]
+  const base = encadear
+    ? volumeInicialDoMes({ ...args, mes: mesAnterior })
+    : (saldos.find(s => anoMesDe(s.competencia) === mesAnterior)?.volume_inicial ?? 0)
+  const movsAnterior = todasMovs.filter(m => anoMesDeMov(m) === mesAnterior && !m.cancelada)
+  const ent = movsAnterior.reduce((s, m) => s + (m.pallets_entrada || 0), 0)
+  const sai = movsAnterior.reduce((s, m) => s + (m.pallets_saida || 0), 0)
+  return base + ent - sai
+}
+
+/**
  * Calcula todos os valores derivados de um mês para um cliente.
  * @param mesesAsc lista de meses com dados em ordem cronológica ascendente
  *                 (necessária para o carry-over do estoque inicial)
@@ -231,23 +262,9 @@ export function calcularMesCliente(args: {
 
   // Estoque inicial (saldo do mês ou carry-over do mês anterior)
   const saldoMes = saldos.find(s => anoMesDe(s.competencia) === mes)
-  let volumeInicial: number
-  if (saldoMes) {
-    volumeInicial = saldoMes.volume_inicial
-  } else {
-    const idx = mesesAsc.indexOf(mes)
-    if (idx <= 0) {
-      volumeInicial = 0
-    } else {
-      const mesAnterior = mesesAsc[idx - 1]
-      const saldoAnterior = saldos.find(s => anoMesDe(s.competencia) === mesAnterior)
-      const volInicialAnterior = saldoAnterior?.volume_inicial ?? 0
-      const movsAnterior = todasMovs.filter(m => anoMesDeMov(m) === mesAnterior && !m.cancelada)
-      const ent = movsAnterior.reduce((s, m) => s + (m.pallets_entrada || 0), 0)
-      const sai = movsAnterior.reduce((s, m) => s + (m.pallets_saida || 0), 0)
-      volumeInicial = volInicialAnterior + ent - sai
-    }
-  }
+  const volumeInicial = volumeInicialDoMes({
+    mes, mesesAsc, saldos, todasMovs, encadear: cliente.modo_calculo === 'avery',
+  })
 
   const aliquota = saldoMes?.percentual_imposto ?? cliente.aliquota_imposto ?? 2
 

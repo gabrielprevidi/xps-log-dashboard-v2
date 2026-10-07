@@ -9,7 +9,7 @@
  */
 
 import ExcelJS from 'exceljs'
-import { valorPalletEfetivo } from './cliente-calculos'
+import { valorPalletEfetivo, volumeInicialDoMes } from './cliente-calculos'
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 type Mov = any
@@ -189,23 +189,10 @@ function calcularMes(
 
   // Estoque inicial (saldo do mês, ou carry-over do mês anterior)
   const saldoMes = saldos.find(s => anoMesDe(s.competencia) === mes)
-  let volumeInicial: number
-  if (saldoMes) {
-    volumeInicial = saldoMes.volume_inicial
-  } else {
-    const idx = mesesOrdenadosAsc.indexOf(mes)
-    if (idx <= 0) {
-      volumeInicial = 0
-    } else {
-      const mesAnterior = mesesOrdenadosAsc[idx - 1]
-      const saldoAnterior = saldos.find(s => anoMesDe(s.competencia) === mesAnterior)
-      const volInicialAnterior = saldoAnterior?.volume_inicial ?? 0
-      const movsAnterior = todasMovs.filter(m => anoMesDeMov(m) === mesAnterior && !m.cancelada)
-      const ent = movsAnterior.reduce((s, m) => s + (m.pallets_entrada || 0), 0)
-      const sai = movsAnterior.reduce((s, m) => s + (m.pallets_saida || 0), 0)
-      volumeInicial = volInicialAnterior + ent - sai
-    }
-  }
+  const volumeInicial = volumeInicialDoMes({
+    mes, mesesAsc: mesesOrdenadosAsc, saldos: saldos as never, todasMovs: todasMovs as never,
+    encadear: cliente.modo_calculo === 'avery',
+  })
 
   const aliquota = saldoMes?.percentual_imposto ?? cliente.aliquota_imposto ?? 2
 

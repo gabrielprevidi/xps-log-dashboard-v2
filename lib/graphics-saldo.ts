@@ -10,7 +10,7 @@
  *   • ocupados = entrou − saiu, e zero quando não há mais caixas do SKU
  * Ajuste comum positivo conta como entrada; negativo, como saída. O ajuste marcado
  * como inventário físico é ponto de partida: o saldo contado vira a entrada e as
- * saídas acumuladas recomeçam do zero.
+ * saídas acumuladas recomeçam do zero. O inventário vale desde o início do dia datado.
  */
 
 export interface GfxSku {
@@ -41,9 +41,10 @@ export function deltaCaixas(m: Pick<GfxMov, 'tipo' | 'qtd_unidades'>): number {
 export interface AcumuladoSku { entrou: number; saiu: number }
 
 export function acumuladoSku(movs: GfxMov[], ateInclusive?: string, antesDe?: string): AcumuladoSku {
-  // Dentro do mesmo dia o inventário vem por último: a contagem já inclui as notas do dia.
+  // O inventário vale desde o INÍCIO do dia em que está datado: dentro do mesmo dia ele vem
+  // primeiro, e as movimentações desse dia em diante contam depois da contagem.
   const ordem = [...movs].sort((a, b) =>
-    a.data_mov.localeCompare(b.data_mov) || Number(!!a.inventario) - Number(!!b.inventario))
+    a.data_mov.localeCompare(b.data_mov) || Number(!!b.inventario) - Number(!!a.inventario))
   let entrou = 0
   let saiu = 0
   for (const m of ordem) {
@@ -128,10 +129,13 @@ export function resumoGraphicsMes(skus: GfxSku[], movs: GfxMov[], competencia: s
     const doSku = movs.filter(m => m.sku_id === sku.id)
     const fator = sku.unidades_por_palet
     const noMesBruto = doSku.filter(m => m.data_mov >= ini && m.data_mov < fim)
-    // Mês com inventário: a contagem é o estoque inicial; só contam as movimentações DEPOIS dela.
+    // Mês com inventário: a contagem é o estoque inicial; contam as movimentações da data dela em diante.
     const dataInv = noMesBruto.filter(m => m.inventario).map(m => m.data_mov).sort().pop()
-    const noMes = dataInv ? noMesBruto.filter(m => m.data_mov > dataInv && !m.inventario) : noMesBruto
-    const antes = dataInv ? acumuladoSku(doSku, dataInv) : acumuladoSku(doSku, undefined, ini)
+    const noMes = dataInv ? noMesBruto.filter(m => m.data_mov >= dataInv && !m.inventario) : noMesBruto
+    // estado logo após a contagem: movimentações anteriores + o inventário, sem as do próprio dia
+    const antes = dataInv
+      ? acumuladoSku(doSku.filter(m => m.data_mov < dataInv || m.inventario), dataInv)
+      : acumuladoSku(doSku, undefined, ini)
     const ate = acumuladoSku(doSku, undefined, fim)
     const saldoInicio = antes.entrou - antes.saiu
     const entradas = noMes.filter(m => m.tipo === 'entrada').reduce((s, m) => s + m.qtd_unidades, 0)

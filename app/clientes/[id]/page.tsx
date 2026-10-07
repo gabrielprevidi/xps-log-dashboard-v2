@@ -14,7 +14,7 @@ import {
   ResponsiveContainer, LabelList, Legend,
 } from 'recharts'
 import { formatarMoeda, calcularPallets } from '@/lib/calculations'
-import { valorPalletEfetivo, calcularMesCliente } from '@/lib/cliente-calculos'
+import { valorPalletEfetivo, calcularMesCliente, volumeInicialDoMes } from '@/lib/cliente-calculos'
 import GraphicsPanel from '@/components/dashboard/GraphicsPanel'
 import { ehMovGraphics } from '@/lib/graphics-saldo'
 
@@ -622,21 +622,10 @@ export default function ClienteDetailPage() {
 
   const saldoMes = saldosMensais.find(s => s.competencia.slice(0, 7) === mesAtual)
 
-  const volumeInicial = (() => {
-    if (saldoMes) return saldoMes.volume_inicial
-    const mesesOrdenados = [...mesesComDados].sort()
-    const idx = mesesOrdenados.indexOf(mesAtual)
-    if (idx === 0) return 0
-    const mesAnterior = mesesOrdenados[idx - 1]
-    const saldoAnterior = saldosMensais.find(s => s.competencia.slice(0, 7) === mesAnterior)
-    const volInicialAnterior = saldoAnterior?.volume_inicial ?? 0
-    const movsAnterior = todasMovs.filter(m =>
-      anoMesDeMovimentacao(m) === mesAnterior && !m.cancelada
-    )
-    const entradas = movsAnterior.reduce((s, m) => s + (m.pallets_entrada || 0), 0)
-    const saidas = movsAnterior.reduce((s, m) => s + (m.pallets_saida || 0), 0)
-    return volInicialAnterior + entradas - saidas
-  })()
+  const volumeInicial = volumeInicialDoMes({
+    mes: mesAtual, mesesAsc: [...mesesComDados].sort(), saldos: saldosMensais,
+    todasMovs: todasMovs as never, encadear: cliente?.modo_calculo === 'avery',
+  })
 
   const aliquota = saldoMes?.percentual_imposto ?? cliente?.aliquota_imposto ?? 2
 
@@ -644,6 +633,18 @@ export default function ClienteDetailPage() {
   const totalSaidas = movsParaContabilizacao.reduce((s, m) => s + (m.pallets_saida || 0), 0)
   const saldoFinal = volumeInicial + totalEntradas - totalSaidas
   const ppPico = calcPPPico(volumeInicial, movsParaContabilizacao)
+
+  // Avery: quantos palets do pico são do Graphics (ocupação acumulada até o dia do pico).
+  const graphicsNoPico = (() => {
+    const gfx = todasMovs.filter(m => ehMovGraphics(m) && !m.cancelada)
+    if (gfx.length === 0) return 0
+    const diaPico = gerarDadosGrafico(volumeInicial, movsParaContabilizacao, mesAtual).find(d => d.saldo === ppPico)?.dia
+    const limite = diaPico ? `${mesAtual}-${diaPico}` : `${mesAtual}-00`   // pico = estoque inicial → antes do mês
+    return gfx.reduce((s, m) => {
+      const data = m.data_entrada || m.data_saida || ''
+      return data <= limite ? s + (m.pallets_entrada || 0) - (m.pallets_saida || 0) : s
+    }, 0)
+  })()
 
   // Fedrigoni: valor por pallet pela tabela de faixa de PP Pico (depende do pico).
   const valorPallet = valorPalletEfetivo({
@@ -1652,6 +1653,9 @@ export default function ClienteDetailPage() {
           </div>
           <p className="text-3xl font-bold text-white">{ppPico}</p>
           <p className="text-xs text-blue-300 mt-1">pallets — base cobrança</p>
+          {graphicsNoPico > 0 && (
+            <p className="text-xs text-blue-200 mt-1">inclui Graphics: {graphicsNoPico} · demais: {ppPico - graphicsNoPico}</p>
+          )}
         </div>
       </div>
 
