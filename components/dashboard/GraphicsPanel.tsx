@@ -26,7 +26,7 @@ export default function GraphicsPanel({ clienteId, mesAtual }: { clienteId: stri
   const [movs, setMovs] = useState<GfxMov[]>([])
   const [carregando, setCarregando] = useState(true)
   const [erro, setErro] = useState<string | null>(null)
-  const [verMovs, setVerMovs] = useState(false)
+  const [filtroSku, setFiltroSku] = useState<string | null>(null)
 
   useEffect(() => {
     let vivo = true
@@ -46,8 +46,9 @@ export default function GraphicsPanel({ clienteId, mesAtual }: { clienteId: stri
   const r = resumoGraphicsMes(skus, movs, mesAtual)
   const skuPorId = new Map(skus.map(s => [s.id, s]))
   const movsMes = movs
-    .filter(m => m.data_mov.startsWith(mesAtual))
-    .sort((a, b) => b.data_mov.localeCompare(a.data_mov))
+    .filter(m => m.data_mov.startsWith(mesAtual) && (!filtroSku || m.sku_id === filtroSku))
+    .sort((a, b) => b.data_mov.localeCompare(a.data_mov) || (a.numero_nfe ?? '').localeCompare(b.numero_nfe ?? ''))
+  const skuFiltrado = filtroSku ? skuPorId.get(filtroSku) : null
   const temDados = movs.length > 0
   const temAjuste = r.caixasAjuste !== 0 || r.linhas.some(l => l.ajustes !== 0)
 
@@ -57,8 +58,8 @@ export default function GraphicsPanel({ clienteId, mesAtual }: { clienteId: stri
         <div>
           <h2 className="font-semibold text-[#0d1b2e]">Graphics — controle por caixas · {mesLabel(mesAtual)}</h2>
           <p className="text-xs text-gray-400 mt-0.5">
-            Contagem por SKU em caixas, 30 caixas por palet. Um palet só sai quando 30 caixas do mesmo SKU
-            são contabilizadas como saída (acumulado), mesmo que o palet de entrada fosse incompleto.
+            Contagem por SKU em caixas, 30 por palet: palets ocupados = saldo ÷ 30 arredondado para cima. O número
+            quebrado é o que falta sair para liberar um palet (ex.: 34 caixas = 2 palets, faltam 4 para liberar um).
           </p>
         </div>
       </div>
@@ -104,7 +105,7 @@ export default function GraphicsPanel({ clienteId, mesAtual }: { clienteId: stri
               <div>Saída declarada: <strong>{n(r.declaradosSaida)}</strong></div>
             </div>
             <p className="text-xs text-gray-400 mt-2">
-              “Por SKU”: entram CEIL(caixas ÷ 30) palets e saem FLOOR(caixas de saída acumuladas ÷ 30). “Declarado” é o número
+              “Por SKU”: variação de CEIL(saldo ÷ 30) de cada SKU no mês. “Declarado” é o número
               de palets informado nas NF-e (campo espécie). Podem diferir quando há palet incompleto ou misto.
             </p>
           </div>
@@ -128,7 +129,7 @@ export default function GraphicsPanel({ clienteId, mesAtual }: { clienteId: stri
                   {temAjuste && <th className="px-3 py-2 text-right" title="Ajuste de inventário físico">Ajuste</th>}
                   <th className="px-3 py-2 text-right">Saldo final</th>
                   <th className="px-3 py-2 text-right">Palets</th>
-                  <th className="px-3 py-2 text-right">Faltam p/ liberar palet</th>
+                  <th className="px-3 py-2 text-right">Faltam p/ liberar 1 palet</th>
                 </tr>
               </thead>
               <tbody>
@@ -136,7 +137,12 @@ export default function GraphicsPanel({ clienteId, mesAtual }: { clienteId: stri
                   <tr><td colSpan={temAjuste ? 9 : 8} className="px-3 py-6 text-center text-gray-400">Sem SKUs com saldo ou movimento neste mês.</td></tr>
                 )}
                 {r.linhas.map(l => (
-                  <tr key={l.sku.id} className="border-b border-gray-50">
+                  <tr
+                    key={l.sku.id}
+                    onClick={() => setFiltroSku(f => (f === l.sku.id ? null : l.sku.id))}
+                    title="Clique para ver só as movimentações deste SKU"
+                    className={`border-b border-gray-50 cursor-pointer hover:bg-blue-50/40 ${filtroSku === l.sku.id ? 'bg-blue-50' : ''}`}
+                  >
                     <td className="px-3 py-2 font-mono text-xs text-gray-700 whitespace-nowrap">{l.sku.codigo}</td>
                     <td className="px-3 py-2 text-gray-500 max-w-[280px] truncate" title={l.sku.descricao ?? ''}>{l.sku.descricao}</td>
                     <td className="px-3 py-2 text-right">{n(l.saldoInicio)}</td>
@@ -145,7 +151,7 @@ export default function GraphicsPanel({ clienteId, mesAtual }: { clienteId: stri
                     {temAjuste && <td className="px-3 py-2 text-right text-gray-600">{l.ajustes ? `${l.ajustes > 0 ? '+' : '−'}${n(Math.abs(l.ajustes))}` : '—'}</td>}
                     <td className={`px-3 py-2 text-right font-semibold ${l.saldoFim < 0 ? 'text-amber-700' : ''}`}>{n(l.saldoFim)}</td>
                     <td className="px-3 py-2 text-right font-semibold text-[#0d1b2e]">{n(l.paletsFim)}</td>
-                    <td className="px-3 py-2 text-right text-gray-500">{l.paletsFim > 0 ? l.faltamParaLiberar : '—'}</td>
+                    <td className="px-3 py-2 text-right text-gray-500">{l.faltamParaLiberar > 0 ? n(l.faltamParaLiberar) : '—'}</td>
                   </tr>
                 ))}
               </tbody>
@@ -166,36 +172,53 @@ export default function GraphicsPanel({ clienteId, mesAtual }: { clienteId: stri
             </table>
           </div>
 
-          <div className="mt-4">
-            <button onClick={() => setVerMovs(v => !v)} className="text-xs font-semibold text-blue-700 hover:underline">
-              {verMovs ? 'Ocultar' : 'Ver'} notas do mês ({movsMes.length})
-            </button>
-            {verMovs && (
-              <div className="overflow-x-auto mt-2">
-                <table className="w-full text-xs">
-                  <thead>
-                    <tr className="text-gray-500 border-b border-gray-100">
-                      <th className="px-3 py-2 text-left">Data</th>
-                      <th className="px-3 py-2 text-left">NF-e</th>
-                      <th className="px-3 py-2 text-left">SKU</th>
-                      <th className="px-3 py-2 text-left">Tipo</th>
-                      <th className="px-3 py-2 text-right">Caixas</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {movsMes.map(m => (
+          <div className="mt-6">
+            <div className="flex items-center justify-between mb-2">
+              <h3 className="text-sm font-semibold text-[#0d1b2e]">
+                Movimentações de {mesLabel(mesAtual)} <span className="text-xs font-normal text-gray-400">({movsMes.length}) — data e NF-e de cada lançamento</span>
+              </h3>
+              {skuFiltrado && (
+                <button onClick={() => setFiltroSku(null)} className="text-xs font-semibold text-blue-700 hover:underline">
+                  filtrando {skuFiltrado.codigo} · limpar
+                </button>
+              )}
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="text-gray-500 border-b border-gray-100">
+                    <th className="px-3 py-2 text-left">Data</th>
+                    <th className="px-3 py-2 text-left">NF-e</th>
+                    <th className="px-3 py-2 text-left">SKU</th>
+                    <th className="px-3 py-2 text-left">Descrição</th>
+                    <th className="px-3 py-2 text-left">Tipo</th>
+                    <th className="px-3 py-2 text-right">Caixas</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {movsMes.length === 0 && (
+                    <tr><td colSpan={6} className="px-3 py-6 text-center text-gray-400">Nenhuma movimentação neste mês.</td></tr>
+                  )}
+                  {movsMes.map(m => {
+                    const sku = skuPorId.get(m.sku_id)
+                    return (
                       <tr key={m.id} className="border-b border-gray-50">
                         <td className="px-3 py-1.5 whitespace-nowrap">{dataBr(m.data_mov)}</td>
                         <td className="px-3 py-1.5 font-mono">{m.numero_nfe ?? '—'}</td>
-                        <td className="px-3 py-1.5 font-mono">{skuPorId.get(m.sku_id)?.codigo ?? '—'}</td>
-                        <td className="px-3 py-1.5">{m.inventario ? 'Inventário' : m.tipo === 'entrada' ? 'Entrada' : m.tipo === 'saida' ? 'Saída' : 'Ajuste'}</td>
+                        <td className="px-3 py-1.5 font-mono whitespace-nowrap">{sku?.codigo ?? '—'}</td>
+                        <td className="px-3 py-1.5 text-gray-500 max-w-[260px] truncate" title={sku?.descricao ?? ''}>{sku?.descricao ?? ''}</td>
+                        <td className="px-3 py-1.5">
+                          <span className={`px-2 py-0.5 rounded-full font-semibold ${m.inventario ? 'bg-amber-50 text-amber-700' : m.tipo === 'entrada' ? 'bg-blue-50 text-blue-700' : m.tipo === 'saida' ? 'bg-orange-50 text-orange-700' : 'bg-gray-100 text-gray-600'}`}>
+                            {m.inventario ? 'Inventário' : m.tipo === 'entrada' ? 'Entrada' : m.tipo === 'saida' ? 'Saída' : 'Ajuste'}
+                          </span>
+                        </td>
                         <td className="px-3 py-1.5 text-right">{m.tipo === 'ajuste' && m.qtd_unidades > 0 ? '+' : ''}{n(m.qtd_unidades)}</td>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
           </div>
         </>
       )}

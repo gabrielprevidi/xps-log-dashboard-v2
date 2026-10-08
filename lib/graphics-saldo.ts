@@ -2,15 +2,16 @@
  * Saldo e palets do Avery Graphics — funções puras (usadas pela tela, pelo
  * cálculo de cobrança e testáveis).
  *
- * Regra de palets, por SKU (nunca somando caixas de SKUs diferentes):
- *   • entrou  = CEIL(caixas que entraram / 30)   — palet incompleto conta como palet
- *   • saiu    = FLOOR(caixas que saíram / 30)    — só sai um palet a cada 30 caixas
- *               de saída ACUMULADAS daquele produto, mesmo que o palet de origem
- *               fosse incompleto
- *   • ocupados = entrou − saiu, e zero quando não há mais caixas do SKU
+ * Regra de palets, por SKU (nunca somando caixas de SKUs diferentes), 30 caixas por palet:
+ *   • palets ocupados = CEIL(saldo / 30)
+ *   • o número quebrado (saldo % 30) é o que falta SAIR para liberar um palet:
+ *       4 caixas  → 1 palet, faltam 4 para liberar
+ *       34 caixas → 2 palets, faltam 4 para liberar um (sobra 1)
+ *       60 caixas → 2 palets, faltam 30 para liberar um
+ *   • saldo zerado (ou negativo) = 0 palets
  * Ajuste comum positivo conta como entrada; negativo, como saída. O ajuste marcado
- * como inventário físico é ponto de partida: o saldo contado vira a entrada e as
- * saídas acumuladas recomeçam do zero. O inventário vale desde o início do dia datado.
+ * como inventário físico é ponto de partida: o saldo contado vira o estoque. O
+ * inventário vale desde o início do dia datado.
  */
 
 export interface GfxSku {
@@ -65,10 +66,18 @@ export function acumuladoSku(movs: GfxMov[], ateInclusive?: string, antesDe?: st
   return { entrou: r4(entrou), saiu: r4(saiu) }
 }
 
-/** Palets ocupados de um SKU pela regra acima. */
+/** Palets ocupados de um SKU: CEIL(saldo / fator); zero sem saldo. */
 export function paletsOcupados(a: AcumuladoSku, fator: number): number {
-  if (a.entrou - a.saiu <= 0) return 0
-  return Math.max(0, Math.ceil(a.entrou / fator) - Math.floor(a.saiu / fator))
+  const saldo = Math.round((a.entrou - a.saiu) * 1e4) / 1e4
+  return saldo > 0 ? Math.ceil(saldo / fator) : 0
+}
+
+/** Quantas caixas precisam sair para liberar um palet do SKU (1–fator); 0 sem saldo. */
+export function faltamParaLiberarPalet(saldo: number, fator: number): number {
+  const s = Math.round(saldo * 1e4) / 1e4
+  if (s <= 0) return 0
+  const resto = Math.round((s % fator) * 1e4) / 1e4
+  return resto === 0 ? fator : resto
 }
 
 export interface LinhaSku {
@@ -80,10 +89,10 @@ export interface LinhaSku {
   saldoFim: number
   paletsInicio: number
   paletsFim: number
-  /** Palets que passaram a ser ocupados / foram liberados no mês (inclui liberação por saldo zerado). */
+  /** Variação líquida de palets do SKU no mês (aumento / redução). */
   paletsEntradaMes: number
   paletsSaidaMes: number
-  /** Caixas de saída que ainda faltam para liberar o próximo palet (1–30). */
+  /** Caixas que ainda faltam sair para liberar um palet (resto de saldo ÷ 30; 30 se múltiplo exato; 0 sem saldo). */
   faltamParaLiberar: number
 }
 
@@ -155,9 +164,9 @@ export function resumoGraphicsMes(skus: GfxSku[], movs: GfxMov[], competencia: s
       sku, saldoInicio, entradas, saidas, ajustes, saldoFim,
       paletsInicio: paletsOcupados(antes, fator),
       paletsFim: paletsOcupados(ate, fator),
-      paletsEntradaMes: Math.ceil(ate.entrou / fator) - Math.ceil(antes.entrou / fator),
-      paletsSaidaMes: paletsOcupados(antes, fator) + (Math.ceil(ate.entrou / fator) - Math.ceil(antes.entrou / fator)) - paletsOcupados(ate, fator),
-      faltamParaLiberar: fator - (ate.saiu % fator),
+      paletsEntradaMes: Math.max(0, paletsOcupados(ate, fator) - paletsOcupados(antes, fator)),
+      paletsSaidaMes: Math.max(0, paletsOcupados(antes, fator) - paletsOcupados(ate, fator)),
+      faltamParaLiberar: faltamParaLiberarPalet(saldoFim, fator),
     })
   }
 
