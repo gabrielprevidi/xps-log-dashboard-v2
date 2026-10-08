@@ -7,7 +7,7 @@ import {
   ArrowLeft, Edit2, X, Loader2, Package, ArrowDownToLine,
   ArrowUpFromLine, TrendingUp, ChevronLeft, ChevronRight,
   Save, AlertCircle, Lock, FileUp, CheckCircle, Send, FileText,
-  Pencil, Plus, Trash2, ShieldAlert, RotateCcw, Scissors, Download, CheckCircle2, Upload,
+  Pencil, Plus, Trash2, ShieldAlert, RotateCcw, Scissors, Download, CheckCircle2, Upload, Printer,
 } from 'lucide-react'
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, Cell,
@@ -1222,6 +1222,20 @@ export default function ClienteDetailPage() {
     }
   }
 
+  // PDF = impressão da própria página (regras @media print em globals.css).
+  // O título do documento vira o nome sugerido do arquivo.
+  function gerarPdfMes() {
+    const tituloOriginal = document.title
+    const nome = (cliente?.nome_fantasia || cliente?.nome || 'cliente').trim()
+    document.title = `Fechamento ${mesAtual} - ${nome}`
+    const restaurar = () => {
+      document.title = tituloOriginal
+      window.removeEventListener('afterprint', restaurar)
+    }
+    window.addEventListener('afterprint', restaurar)
+    window.print()
+  }
+
   const dadosGrafico = gerarDadosGrafico(volumeInicial, movsParaContabilizacao, mesAtual)
   const picoValor = dadosGrafico.reduce((max, d) => d.saldo > max ? d.saldo : max, 0)
 
@@ -1243,7 +1257,7 @@ export default function ClienteDetailPage() {
     <main className="max-w-[1400px] mx-auto px-6 py-8">
 
       {/* Breadcrumb */}
-      <div className="flex items-center gap-2 mb-6">
+      <div className="flex items-center gap-2 mb-6 print:hidden">
         <Link href="/clientes" className="flex items-center gap-1.5 text-gray-400 hover:text-gray-700 text-sm">
           <ArrowLeft className="w-4 h-4" /> Clientes
         </Link>
@@ -1304,8 +1318,21 @@ export default function ClienteDetailPage() {
         </div>
       </div>
 
+      {/* Título exclusivo do PDF (o seletor de mês some na impressão) */}
+      <div className="hidden print:block mb-4">
+        <h2 className="text-lg font-bold text-[#0d1b2e]">
+          Fechamento — {mesLabel(mesAtual)}
+        </h2>
+        <p className="text-xs text-gray-500">
+          {fechamentoMes?.fechado_em
+            ? `Mês fechado em ${new Date(fechamentoMes.fechado_em).toLocaleDateString('pt-BR')} · `
+            : ''}
+          Emitido em {new Date().toLocaleDateString('pt-BR')}
+        </p>
+      </div>
+
       {/* Seletor de mês */}
-      <div className="flex items-center gap-3 mb-6">
+      <div className="flex items-center gap-3 mb-6 print:hidden">
         <button
           onClick={() => {
             const idx = mesesComDados.indexOf(mesAtual)
@@ -1357,6 +1384,14 @@ export default function ClienteDetailPage() {
                   <span className="text-amber-500">· {new Date(fechamentoMes.fechado_em).toLocaleDateString('pt-BR')}</span>
                 )}
               </span>
+
+              <button
+                onClick={gerarPdfMes}
+                className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-xl border border-[#0d1b2e]/20 text-[#0d1b2e] hover:bg-gray-50 transition-colors font-semibold"
+                title="Gerar PDF desta página com os dados do mês fechado"
+              >
+                <Printer className="w-3.5 h-3.5" /> Gerar PDF do mês
+              </button>
 
               {fechamentoMes?.arquivo_cobranca_url && (
                 <a href={fechamentoMes.arquivo_cobranca_url} target="_blank" rel="noopener noreferrer"

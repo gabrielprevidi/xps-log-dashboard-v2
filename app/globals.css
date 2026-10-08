@@ -24,3 +24,39 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+/* Impressão / PDF do fechamento mensal (página do cliente) */
+@page {
+  size: A4 landscape;
+  margin: 10mm;
+}
+
+@media print {
+  html, body {
+    background: #ffffff !important;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  /* Controles de edição não fazem sentido no papel */
+  main button,
+  main input,
+  main select,
+  main textarea,
+  main label[class*="cursor-pointer"],
+  main .fixed {
+    display: none !important;
+  }
+
+  main {
+    max-width: none !important;
+    padding: 0 !important;
+  }
+
+  /* Não quebrar cartões, linhas e gráficos no meio */
+  main tr,
+  main .recharts-wrapper,
+  main .rounded-2xl {
+    break-inside: avoid;
+  }
+}
