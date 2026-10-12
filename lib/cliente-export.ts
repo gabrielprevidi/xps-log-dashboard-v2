@@ -9,7 +9,7 @@
  */
 
 import ExcelJS from 'exceljs'
-import { valorPalletEfetivo, volumeInicialDoMes } from './cliente-calculos'
+import { valorPalletEfetivo, volumeInicialDoMes, graphicsNoPicoMes, armazenagemBase } from './cliente-calculos'
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 type Mov = any
@@ -25,6 +25,7 @@ interface ClienteExport {
   cobrar_manuseio?: boolean | null
   cobrar_separacao_sacaria?: boolean | null
   modo_calculo?: string | null
+  valor_pallet_graphics?: number | null
 }
 
 interface SaldoMensal {
@@ -74,6 +75,8 @@ interface ResumoMes {
   totalSaidas: number
   saldoFinal: number
   ppPico: number
+  ppPicoGraphics: number
+  valorPalletGraphics: number
   valorPallet: number
   aliquota: number
   armazBase: number
@@ -206,7 +209,9 @@ function calcularMes(
     valorManual: saldoMes?.valor_pallet,
     valorCliente: cliente.valor_pallet,
   })
-  const armazBase = ppPico * valorPallet
+  const ppPicoGraphics = graphicsNoPicoMes({ mes, volumeInicial, movsContab: movsContab as never, todasMovs: todasMovs as never })
+  const valorPalletGraphics = cliente.valor_pallet_graphics ?? valorPallet
+  const armazBase = armazenagemBase({ ppPico, graphicsNoPico: ppPicoGraphics, valorPallet, valorPalletGraphics })
   const armazTotal = armazBase * (1 + aliquota / 100)
 
   const separacao =
@@ -231,7 +236,7 @@ function calcularMes(
 
   return {
     mes, volumeInicial, totalEntradas, totalSaidas, saldoFinal, ppPico,
-    valorPallet, aliquota, armazBase, armazTotal, manuseio, separacao,
+    ppPicoGraphics, valorPalletGraphics, valorPallet, aliquota, armazBase, armazTotal, manuseio, separacao,
     cobrancas: totalCobrancas, totalAdicionais: manuseio + separacao + totalCobrancas,
     status, movsContab, movsSeparacao, excessos, movsTodasMes, cobrancasMes,
   }
@@ -346,6 +351,10 @@ export async function gerarPlanilhaCliente(
       ['Saídas (pallets)', r.totalSaidas],
       ['Saldo Final (pallets)', r.saldoFinal],
       ['PP Pico (pallets)', r.ppPico],
+      ...(r.ppPicoGraphics > 0 ? [
+        ['  dos quais Graphics (pallets)', r.ppPicoGraphics],
+        ['  Valor por Pallet Graphics', r.valorPalletGraphics, MOEDA],
+      ] as Array<[string, any, string?]> : []),
       ['Valor por Pallet', r.valorPallet, MOEDA],
       ['Armazenagem Base', r.armazBase, MOEDA],
       ['Imposto', r.aliquota, '0.00"%"'],

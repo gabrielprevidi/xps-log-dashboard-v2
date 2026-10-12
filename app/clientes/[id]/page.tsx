@@ -14,7 +14,7 @@ import {
   ResponsiveContainer, LabelList, Legend,
 } from 'recharts'
 import { formatarMoeda, calcularPallets } from '@/lib/calculations'
-import { valorPalletEfetivo, calcularMesCliente, volumeInicialDoMes } from '@/lib/cliente-calculos'
+import { valorPalletEfetivo, calcularMesCliente, volumeInicialDoMes, graphicsNoPicoMes, armazenagemBase } from '@/lib/cliente-calculos'
 import GraphicsPanel from '@/components/dashboard/GraphicsPanel'
 import { ehMovGraphics } from '@/lib/graphics-saldo'
 
@@ -81,6 +81,7 @@ interface Cliente {
   cobrar_separacao_sacaria: boolean
   modo_calculo?: string | null
   somar_armazenagem_no_total?: boolean | null
+  valor_pallet_graphics?: number | null
 }
 
 interface CobrancaAdicional {
@@ -634,17 +635,10 @@ export default function ClienteDetailPage() {
   const saldoFinal = volumeInicial + totalEntradas - totalSaidas
   const ppPico = calcPPPico(volumeInicial, movsParaContabilizacao)
 
-  // Avery: quantos palets do pico são do Graphics (ocupação acumulada até o dia do pico).
-  const graphicsNoPico = (() => {
-    const gfx = todasMovs.filter(m => ehMovGraphics(m) && !m.cancelada)
-    if (gfx.length === 0) return 0
-    const diaPico = gerarDadosGrafico(volumeInicial, movsParaContabilizacao, mesAtual).find(d => d.saldo === ppPico)?.dia
-    const limite = diaPico ? `${mesAtual}-${diaPico}` : `${mesAtual}-00`   // pico = estoque inicial → antes do mês
-    return gfx.reduce((s, m) => {
-      const data = m.data_entrada || m.data_saida || ''
-      return data <= limite ? s + (m.pallets_entrada || 0) - (m.pallets_saida || 0) : s
-    }, 0)
-  })()
+  // Avery: parte do pico que é Graphics (cobrada ao valor do produto Graphics)
+  const graphicsNoPico = graphicsNoPicoMes({
+    mes: mesAtual, volumeInicial, movsContab: movsParaContabilizacao as never, todasMovs: todasMovs as never,
+  })
 
   // Fedrigoni: valor por pallet pela tabela de faixa de PP Pico (depende do pico).
   const valorPallet = valorPalletEfetivo({
@@ -653,7 +647,8 @@ export default function ClienteDetailPage() {
     valorManual: saldoMes?.valor_pallet,
     valorCliente: cliente?.valor_pallet,
   })
-  const armazBase = ppPico * valorPallet
+  const valorPalletGraphics = cliente?.valor_pallet_graphics ?? valorPallet
+  const armazBase = armazenagemBase({ ppPico, graphicsNoPico, valorPallet, valorPalletGraphics })
   const armazTotal = armazBase * (1 + aliquota / 100)
 
   // ── resumo por categoria de produto ──
@@ -1699,7 +1694,11 @@ export default function ClienteDetailPage() {
         <div className="bg-white rounded-2xl border border-gray-100 p-5">
           <p className="text-xs text-gray-400 uppercase tracking-wider mb-2">Armazenagem s/ imposto</p>
           <p className="text-3xl font-bold text-[#0d1b2e]">{formatarMoeda(armazBase)}</p>
-          <p className="text-xs text-gray-400 mt-1">{ppPico} pallets × {formatarMoeda(valorPallet)}</p>
+          <p className="text-xs text-gray-400 mt-1">
+            {graphicsNoPico > 0
+              ? `${ppPico - graphicsNoPico} pallets × ${formatarMoeda(valorPallet)} + ${graphicsNoPico} Graphics × ${formatarMoeda(valorPalletGraphics)}`
+              : `${ppPico} pallets × ${formatarMoeda(valorPallet)}`}
+          </p>
         </div>
         <div className="bg-emerald-50 rounded-2xl border border-emerald-100 p-5">
           <p className="text-xs text-emerald-600 uppercase tracking-wider mb-2">Armazenagem c/ imposto ({aliquota}%)</p>

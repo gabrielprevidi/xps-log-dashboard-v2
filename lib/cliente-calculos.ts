@@ -11,6 +11,8 @@
  */
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
+import { ehMovGraphics } from './graphics-saldo'
+
 export type MovCalc = any
 
 export interface ClienteCalc {
@@ -22,6 +24,8 @@ export interface ClienteCalc {
   modo_calculo?: string | null
   /** Soma a armazenagem ao Total Geral (ver migration 024). Hoje só a Alphalum. */
   somar_armazenagem_no_total?: boolean | null
+  /** Avery: valor por pallet do Graphics (produto "Graphics" do cadastro). Sem ele, vale o valor normal. */
+  valor_pallet_graphics?: number | null
 }
 
 /**
@@ -126,6 +130,9 @@ export interface ResultadoMes {
   totalSaidas: number
   saldoFinal: number
   ppPico: number
+  /** Parte do PP pico que é Graphics (cobrada a `valorPalletGraphics`). */
+  ppPicoGraphics: number
+  valorPalletGraphics: number
   armazBase: number
   armazTotal: number
   totalSeparacao: number
@@ -143,6 +150,61 @@ export interface ResultadoMes {
   totalComImposto: number
   /** true quando a armazenagem está somada nos dois totais acima. */
   armazenagemNoTotal: boolean
+}
+
+/**
+ * PP pico com o dia em que ele ocorre (primeiro dia que atinge o máximo).
+ * `data` = null quando o pico é o próprio estoque inicial (nenhum dia o supera).
+ */
+export function picoComData(volumeInicial: number, movs: MovCalc[]): { pico: number; data: string | null } {
+  const porDia: Record<string, number> = {}
+  for (const m of movs) {
+    const data = m.data_entrada || m.data_saida || ''
+    if (!data) continue
+    const delta = m.tipo_movimentacao === 'entrada' ? (m.pallets_entrada || 0) : -(m.pallets_saida || 0)
+    porDia[data] = (porDia[data] || 0) + delta
+  }
+  let saldo = volumeInicial
+  let pico = volumeInicial
+  let dataPico: string | null = null
+  for (const data of Object.keys(porDia).sort()) {
+    saldo += porDia[data]
+    if (saldo > pico) { pico = saldo; dataPico = data }
+  }
+  return { pico, data: dataPico }
+}
+
+/**
+ * Quantos pallets do PP pico são do Graphics: a ocupação dele (soma das linhas
+ * sintéticas "gfx:") até o dia do pico, ou antes do mês quando o pico é o estoque
+ * inicial. O Graphics tem valor por pallet próprio (`valor_pallet_graphics`).
+ */
+export function graphicsNoPicoMes(args: {
+  mes: string
+  volumeInicial: number
+  movsContab: MovCalc[]
+  todasMovs: MovCalc[]
+}): number {
+  const gfx = args.todasMovs.filter(m => ehMovGraphics(m) && !m.cancelada)
+  if (gfx.length === 0) return 0
+  const { pico, data } = picoComData(args.volumeInicial, args.movsContab)
+  const limite = data ?? `${args.mes}-00`          // pico = estoque inicial → antes do mês
+  const g = gfx.reduce((s, m) => {
+    const d = m.data_entrada || m.data_saida || ''
+    return d <= limite ? s + (m.pallets_entrada || 0) - (m.pallets_saida || 0) : s
+  }, 0)
+  return Math.max(0, Math.min(g, pico))
+}
+
+/** Armazenagem s/ imposto: pallets normais no valor do cliente + pallets do Graphics no valor próprio. */
+export function armazenagemBase(args: {
+  ppPico: number
+  graphicsNoPico: number
+  valorPallet: number
+  valorPalletGraphics?: number | null
+}): number {
+  const vg = args.valorPalletGraphics ?? args.valorPallet
+  return (args.ppPico - args.graphicsNoPico) * args.valorPallet + args.graphicsNoPico * vg
 }
 
 /**
@@ -279,7 +341,9 @@ export function calcularMesCliente(args: {
     valorManual: saldoMes?.valor_pallet,
     valorCliente: cliente.valor_pallet,
   })
-  const armazBase = ppPico * valorPallet
+  const ppPicoGraphics = graphicsNoPicoMes({ mes, volumeInicial, movsContab, todasMovs })
+  const valorPalletGraphics = cliente.valor_pallet_graphics ?? valorPallet
+  const armazBase = armazenagemBase({ ppPico, graphicsNoPico: ppPicoGraphics, valorPallet, valorPalletGraphics })
   const armazTotal = armazBase * (1 + aliquota / 100)
 
   const totalSeparacao =
@@ -308,7 +372,7 @@ export function calcularMesCliente(args: {
   return {
     mes, volumeInicial, valorPallet, aliquota, movsTodasMes, movsContab,
     movsSeparacao, excessos, totalEntradas, totalSaidas, saldoFinal, ppPico,
-    armazBase, armazTotal, totalSeparacao, totalManuseio, manuseioEfetivo,
+    ppPicoGraphics, valorPalletGraphics, armazBase, armazTotal, totalSeparacao, totalManuseio, manuseioEfetivo,
     totalCobrancas, totalGeral, totalSemImposto, totalComImposto,
     armazenagemNoTotal,
   }

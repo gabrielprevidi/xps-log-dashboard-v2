@@ -285,7 +285,11 @@ export default function PortalPage() {
           <div className="bg-white rounded-2xl border border-gray-100 p-5">
             <p className="text-xs text-gray-400 uppercase tracking-wider mb-2">Armazenagem s/ imposto</p>
             <p className="text-3xl font-bold text-[#0d1b2e]">{formatarMoeda(calc.armazBase)}</p>
-            <p className="text-xs text-gray-400 mt-1">{calc.ppPico} pallets × {formatarMoeda(calc.valorPallet)}</p>
+            <p className="text-xs text-gray-400 mt-1">
+              {calc.ppPicoGraphics > 0
+                ? `${calc.ppPico - calc.ppPicoGraphics} pallets × ${formatarMoeda(calc.valorPallet)} + ${calc.ppPicoGraphics} Graphics × ${formatarMoeda(calc.valorPalletGraphics)}`
+                : `${calc.ppPico} pallets × ${formatarMoeda(calc.valorPallet)}`}
+            </p>
           </div>
           <div className="bg-emerald-50 rounded-2xl border border-emerald-100 p-5">
             <p className="text-xs text-emerald-600 uppercase tracking-wider mb-2">Armazenagem c/ imposto ({calc.aliquota}%)</p>

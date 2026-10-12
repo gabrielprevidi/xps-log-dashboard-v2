@@ -1557,7 +1557,17 @@ export async function buscarClientePorId(id: string) {
     }
   }
 
-  return { cliente, movimentacoes: movsFinal }
+  // Avery Dennison: valor por pallet do Graphics = valor do produto "Graphics" do cadastro
+  // (Configurações → produtos), editável como os demais.
+  let clienteFinal = cliente
+  if (ehClienteAveryDennison(cliente?.cnpj)) {
+    const { data: prodGfx } = await supabase
+      .from('cliente_produtos').select('valor_pallet')
+      .eq('cliente_id', id).eq('ativo', true).ilike('nome', 'graphics').maybeSingle()
+    if (prodGfx?.valor_pallet != null) clienteFinal = { ...cliente, valor_pallet_graphics: Number(prodGfx.valor_pallet) }
+  }
+
+  return { cliente: clienteFinal, movimentacoes: movsFinal }
 }
 
 export async function atualizarCliente(id: string, dados: {
