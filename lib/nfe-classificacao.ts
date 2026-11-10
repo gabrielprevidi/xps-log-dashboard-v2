@@ -25,6 +25,13 @@ const PADROES_ENTRADA = [
   'armazenagem',
 ]
 
+/** Raiz do CNPJ da XPS LOG (matriz 0001-10 e filial Vinhedo 0004-62). */
+const RAIZ_CNPJ_XPS = '32771162'
+
+export function ehCnpjXps(cnpj: string | null | undefined): boolean {
+  return String(cnpj ?? '').replace(/\D/g, '').startsWith(RAIZ_CNPJ_XPS)
+}
+
 function normalizarNatureza(natureza: string): string {
   return natureza
     .toLowerCase()
@@ -88,8 +95,27 @@ export function classificarOperacaoV2(
   natureza: string,
   modo: string,
   codigoOperacaoDanfe?: number | null,
+  cnpjDestinatario?: string | null,
 ): { tipo: 'entrada' | 'saida' | null; motivo?: string } {
   const n = normalizarNatureza(natureza).trim()
+
+  // ─────────────────────────────────────────────────────────────────────
+  // AVERY — natureza "ABSENT".
+  // O ERP da Avery não preenche a natureza nas remessas de Matéria-Prima
+  // para a XPS e imprime literalmente "ABSENT". A regra genérica não reconhece
+  // isso como entrada e classificava como SAÍDA: em out–nov/2026, 108 remessas
+  // da Avery Dennison para a XPS foram gravadas como saída. Todas as notas
+  // "ABSENT" do histórico têm a XPS como destinatária, então é a destinatária
+  // que decide. A V1 já tinha essa regra (`tipoOperacaoPorNaturezaEDestinatario`).
+  // Se a destinatária não for a XPS, não há base para decidir: fica para revisão.
+  // ─────────────────────────────────────────────────────────────────────
+  if (modo === 'avery' && n === 'absent') {
+    if (ehCnpjXps(cnpjDestinatario)) return { tipo: 'entrada' }
+    return {
+      tipo: null,
+      motivo: `natureza "ABSENT" com destinatário que não é a XPS (${cnpjDestinatario || 'não identificado'}) — revisar`,
+    }
+  }
 
   if (modo === 'fedrigoni') {
     const t = classificarOperacaoFedrigoni(natureza, codigoOperacaoDanfe)

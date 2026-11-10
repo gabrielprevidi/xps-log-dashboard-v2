@@ -157,7 +157,7 @@ export async function prefiltrar(
 
     // 4. Operação precisa ser entrada ou saída
     const { tipo, motivo } = classificarOperacaoV2(
-      nfe?.natureza_operacao ?? '', modo, nfe?.codigo_operacao_danfe,
+      nfe?.natureza_operacao ?? '', modo, nfe?.codigo_operacao_danfe, nfe?.cnpj_destinatario,
     )
     if (!tipo) {
       descartes.push({ arquivo: anexo.nome_arquivo, motivo: motivo ?? 'operação não contabilizada', categoria: 'operacao_informativa' })

@@ -1254,7 +1254,7 @@ export async function persistirAnexo(
     // classificava "Retorno de mercadoria depositada" como entrada (invertendo
     // o sinal do estoque). Ver classificarOperacaoV2.
     const { tipo: tipoOpAvery, motivo: motivoAvery } =
-      classificarOperacaoV2(nfe?.natureza_operacao ?? '', 'avery')
+      classificarOperacaoV2(nfe?.natureza_operacao ?? '', 'avery', null, nfe?.cnpj_destinatario)
     if (!tipoOpAvery) {
       resultado.erros.push(`Avery NF-e ${nfe?.numero_nfe ?? anexo.nome_arquivo}: ${motivoAvery}`)
       return comArquivo(null)

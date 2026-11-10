@@ -11,7 +11,7 @@ import { classificarOperacaoV2 } from '../lib/nfe-classificacao.ts'
 
 type Esperado = 'entrada' | 'saida' | null
 
-const CASOS: Array<{ natureza: string; modo: string; esperado: Esperado; porque: string }> = [
+const CASOS: Array<{ natureza: string; modo: string; dest?: string; esperado: Esperado; porque: string }> = [
   // ── O caso que motivou a correção ──────────────────────────────────────
   {
     natureza: 'Retorno de mercadoria depositada em depósito fechado ou armazém geral',
@@ -67,13 +67,21 @@ const CASOS: Array<{ natureza: string; modo: string; esperado: Esperado; porque:
   { natureza: 'INSCRIÇÃO ESTADUALINSC. ESTADUAL DO SUBST. TRIBUTÁRIOCNPJ', modo: 'padrao', esperado: null, porque: 'rótulo do DANFE capturado por engano pelo parser' },
   { natureza: '', modo: 'padrao', esperado: null, porque: 'natureza vazia: virar saída seria chute em baixa de estoque' },
   { natureza: 'Devol. Compras Ind. Fora PR', modo: 'padrao', esperado: null, porque: 'devolução de compra' },
+
+  // ── Avery: natureza "ABSENT" (remessa de Matéria-Prima sem natureza) ─────
+  { natureza: 'ABSENT', modo: 'avery', dest: '32771162000462', esperado: 'entrada', porque: 'Avery → XPS Vinhedo: entrada (108 gravadas como saída em out–nov/2026)' },
+  { natureza: 'ABSENT', modo: 'avery', dest: '32771162000110', esperado: 'entrada', porque: 'Avery → XPS matriz: entrada' },
+  { natureza: 'ABSENT', modo: 'avery', dest: '12345678000199', esperado: null, porque: 'destinatário não é a XPS: sem base, revisar' },
+  { natureza: 'Remes. para depósito fechado ou armazém geral', modo: 'avery', dest: '32771162000462', esperado: 'entrada', porque: 'remessa para depósito' },
+  { natureza: 'Retorno de mercadoria depositada em depósito fechado ou arm', modo: 'avery', esperado: 'saida', porque: 'retorno sai do armazém' },
+  { natureza: 'Vend. merc. adq. ou receb. de terc.', modo: 'avery', esperado: 'saida', porque: 'venda sai do armazém' },
 ]
 
 let falhas = 0
 console.log('\nclassificarOperacaoV2 — casos reais do histórico\n')
 
 for (const c of CASOS) {
-  const { tipo } = classificarOperacaoV2(c.natureza, c.modo)
+  const { tipo } = classificarOperacaoV2(c.natureza, c.modo, null, c.dest)
   const ok = tipo === c.esperado
   if (!ok) falhas++
   const rotulo = (v: Esperado) => (v === null ? 'NÃO CONTA' : v.toUpperCase())
