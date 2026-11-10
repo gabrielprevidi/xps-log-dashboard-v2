@@ -302,11 +302,21 @@ export async function lerEmailsNFeImap(opcoes: OpcoesLeitura = {}): Promise<Resu
         ultimo_uid: marcaValida ? marca.ultimo_uid : 0,
         examinadas: 0,
       }
+      const ultimoUidOriginal = estado.ultimo_uid
 
       // Pasta sem nada no período: fixa a linha de base no estado atual, senão
       // a busca por data se repetiria a cada rodada, para sempre.
-      if (uids.length === 0 && !marcaValida) {
-        estado.ultimo_uid = Math.max(0, Number(mb.uidNext) - 1)
+      //
+      // A condição ERA `uids.length === 0 && !marcaValida` — faltava o caso de
+      // uma pasta com `uid_validity` já validado mas `ultimo_uid` ainda em 0
+      // (primeira vez que a pasta é vista, cai no ramo de busca por data acima,
+      // não no de "N:*"). Se a única mensagem da pasta for ANTERIOR ao corte, a
+      // busca por data devolve vazio, `marcaValida` continua true, e a marca
+      // nunca avança: a pasta fica pendente para sempre, sem nunca ser mesmo
+      // examinada. Foi o que travou "INBOX/Contato Alpha Lum" (uid 1, de
+      // 10/07/2026, corte em 31/07) indefinidamente a partir de 01/10/2026.
+      if (uids.length === 0) {
+        estado.ultimo_uid = Math.max(estado.ultimo_uid, Number(mb.uidNext) - 1)
       }
 
       for (const uid of uids.sort((a, b) => a - b)) {
@@ -447,7 +457,12 @@ export async function lerEmailsNFeImap(opcoes: OpcoesLeitura = {}): Promise<Resu
         concluidasNestaRodada++
       }
 
-      if (estado.examinadas > 0 || !marcaValida) resultado.estados.push(estado)
+      // Também salva quando a única mudança foi a correção da linha de base
+      // (`estado.ultimo_uid` avançou sem nenhuma mensagem examinada) — sem
+      // isto, a correção acima roda a cada rodada mas nunca é persistida.
+      if (estado.examinadas > 0 || !marcaValida || estado.ultimo_uid !== ultimoUidOriginal) {
+        resultado.estados.push(estado)
+      }
       await client.mailboxClose()
     }
   } finally {
