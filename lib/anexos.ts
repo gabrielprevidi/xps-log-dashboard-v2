@@ -29,6 +29,11 @@ export interface EmailProcessado {
   remetente_nome: string
   data_recebimento: string
   cnpjs_corpo: string[]
+  /**
+   * Texto do corpo (thread citado incluso). Usado pela Grow Label: a contagem
+   * de pallets da logística vem numa tabela no corpo, não na nota.
+   */
+  corpo_texto?: string
   anexos_xml: AnexoXML[]
   /** V2: pasta IMAP e UID de origem — não existe no caminho do Graph. */
   pasta?: string

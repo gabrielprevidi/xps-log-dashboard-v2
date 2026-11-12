@@ -4,6 +4,7 @@
  */
 
 import { ehClienteAveryDennison, ehNotaGraphics, tipoGraphics, gravarGraphics } from './graphics'
+import { ehClienteGrowLabel, ehNotaCoberturaSemPallet, palletsDaCobertura } from './grow-label'
 import { movsOcupacaoGraphics, type GfxSku, type GfxMov } from './graphics-saldo'
 import { createClient } from '@supabase/supabase-js'
 import type { EmailProcessado, AnexoXML } from './anexos'
@@ -842,7 +843,7 @@ export async function persistirEmail(
 
   // 3. Processar cada anexo NFe
   for (const anexo of email.anexos_xml) {
-    await persistirAnexo(supabase, emailSalvo.id, anexo, resultado, email.remetente, email.remetente_nome, email.assunto, email.cnpjs_corpo ?? [])
+    await persistirAnexo(supabase, emailSalvo.id, anexo, resultado, email.remetente, email.remetente_nome, email.assunto, email.cnpjs_corpo ?? [], { corpoEmail: email.corpo_texto })
   }
 
   return resultado
@@ -869,7 +870,7 @@ export async function persistirAnexo(
   remetenteNome = '',
   assunto = '',
   cnpjsCorpo: string[] = [],
-  opts?: { clienteIdForcado?: string; uploadManual?: boolean; enviadoPor?: string },
+  opts?: { clienteIdForcado?: string; uploadManual?: boolean; enviadoPor?: string; corpoEmail?: string },
 ): Promise<ResultadoPersistirAnexo> {
   const vazio: ResultadoPersistirAnexo = { arquivoId: null, movimentacaoId: null }
 
@@ -1196,11 +1197,28 @@ export async function persistirAnexo(
       return comArquivo(null)
     }
 
-    const volumesEspecie = nfe?.quantidade_especie ?? null
+    let volumesEspecie = nfe?.quantidade_especie ?? null
+    let coberturaGrowSemContagem = false
+
+    // Grow Label: nota de cobertura de material da TUBOMAIS / C.R. Embalagens.
+    // A quantidade da nota não é pallet — vale a contagem manual da logística,
+    // na tabela citada no corpo do email. Ver lib/grow-label.ts.
+    if (tipoOpEspecie === 'entrada' && ehClienteGrowLabel(clienteCnpj) && ehNotaCoberturaSemPallet(nfe?.texto_pdf)) {
+      const cob = palletsDaCobertura(nfe?.texto_pdf, nfe?.numero_nfe, opts?.corpoEmail)
+      volumesEspecie = cob.pallets
+      if (cob.pallets === null) {
+        coberturaGrowSemContagem = true
+        const ref = cob.referencias.length ? ` (ref. NF ${cob.referencias.join(', ')})` : ''
+        resultado.erros.push(
+          `Grow Label NF-e ${nfe?.numero_nfe ?? anexo.nome_arquivo}${ref}: material TUBOMAIS/C.R. Embalagens — ` +
+          `quantidade de pallets da logística não encontrada no corpo do email; gravada sem pallets, lançar manualmente.`
+        )
+      }
+    }
     const valorVolumeEspecie = clienteConfig?.valor_pallet ?? 40
     const aliquotaEspecie = clienteConfig?.aliquota_imposto ?? 0
 
-    if (volumesEspecie === null) {
+    if (volumesEspecie === null && !coberturaGrowSemContagem) {
       resultado.erros.push(
         `NF-e ${nfe?.numero_nfe ?? anexo.nome_arquivo}: quantidade de volumes não identificada no documento — revisar manualmente.`
       )

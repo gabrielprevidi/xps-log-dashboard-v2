@@ -433,11 +433,13 @@ export async function lerEmailsNFeImap(opcoes: OpcoesLeitura = {}): Promise<Resu
 
         // CNPJs do corpo — fallback de identificação de cliente
         let cnpjs: string[] = []
+        let corpoTexto = ''
         const parteTexto = acharParteTexto(msg.bodyStructure)
         if (parteTexto) {
           try {
             const corpo = (await baixarParte(client, uid, parteTexto)).toString('utf-8')
             cnpjs = extrairCnpjsDoTexto(corpo.replace(/<[^>]+>/g, ' ') + ' ' + assunto)
+            corpoTexto = corpo.slice(0, 200_000)
           } catch { /* corpo indisponível — segue sem CNPJ do corpo */ }
         }
 
@@ -449,6 +451,7 @@ export async function lerEmailsNFeImap(opcoes: OpcoesLeitura = {}): Promise<Resu
           remetente_nome: de?.name ?? '',
           data_recebimento: (msg.envelope?.date ?? new Date()).toISOString(),
           cnpjs_corpo: cnpjs,
+          corpo_texto: corpoTexto,
           anexos_xml: anexosXML,
           pasta: box.path,
           uid,
