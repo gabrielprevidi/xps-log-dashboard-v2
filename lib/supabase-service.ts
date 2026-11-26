@@ -1349,7 +1349,10 @@ export async function persistirAnexo(
   // LÓGICA PADRÃO (Alphalum e demais clientes)
   // ─────────────────────────────────────────────────────────────────
   const { tipo: tipoOp, motivo: motivoPadrao } =
-    classificarOperacaoV2(nfe?.natureza_operacao ?? '', modoCalculo)
+    classificarOperacaoV2(nfe?.natureza_operacao ?? '', modoCalculo, null, null, {
+      cnpjCliente: clienteCnpj,
+      cfops: [nfe?.cfop, ...(nfe?.itens ?? []).map(i => i.cfop)],
+    })
   if (!tipoOp) {
     resultado.erros.push(`NF-e ${nfe?.numero_nfe ?? anexo.nome_arquivo}: ${motivoPadrao}`)
     return comArquivo(null)

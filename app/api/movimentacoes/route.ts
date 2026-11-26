@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { criarMovimentacaoManual } from '@/lib/supabase-service'
 import { getUsuarioAtual } from '@/lib/admin-auth'
-import { assertMesesAbertos, competenciaDe, respostaErro } from '@/lib/fechamento-guard'
+import { assertDatasAbertas, respostaErro } from '@/lib/fechamento-guard'
 
 export const dynamic = 'force-dynamic'
 
@@ -11,10 +11,7 @@ export async function POST(request: NextRequest) {
     if (!body.cliente_id || !body.tipo_movimentacao) {
       return NextResponse.json({ error: 'cliente_id e tipo_movimentacao obrigatórios' }, { status: 400 })
     }
-    await assertMesesAbertos(body.cliente_id, [
-      competenciaDe(body.data_entrada),
-      competenciaDe(body.data_saida),
-    ])
+    await assertDatasAbertas(body.cliente_id, [body.data_entrada, body.data_saida])
     const usuario = await getUsuarioAtual()
     const mov = await criarMovimentacaoManual(body, usuario ?? undefined)
     return NextResponse.json(mov)

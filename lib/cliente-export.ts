@@ -9,7 +9,10 @@
  */
 
 import ExcelJS from 'exceljs'
-import { valorPalletEfetivo, volumeInicialDoMes, graphicsNoPicoMes, armazenagemBase } from './cliente-calculos'
+import {
+  valorPalletEfetivo, volumeInicialDoMes, graphicsNoPicoMes, armazenagemBase,
+  competenciaDaData, diaInicioPeriodo, rotuloPeriodo, encadearEstoque,
+} from './cliente-calculos'
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 type Mov = any
@@ -57,8 +60,8 @@ function anoMesDe(dataStr: string): string {
   return (dataStr || '').slice(0, 7)
 }
 
-function anoMesDeMov(m: Mov): string {
-  return anoMesDe(m.data_entrada || m.data_saida || m.created_at || '')
+function anoMesDeMov(m: Mov, diaInicio = 1): string {
+  return competenciaDaData(m.data_entrada || m.data_saida || m.created_at || '', diaInicio)
 }
 
 const STATUS_LABEL: Record<string, string> = {
@@ -134,7 +137,8 @@ function calcularMes(
   const cobrarSep = cliente.cobrar_separacao_sacaria === true
   const cobrarManuseio = cliente.cobrar_manuseio ?? true
 
-  const movsTodasMes = todasMovs.filter(m => anoMesDeMov(m) === mes)
+  const diaInicio = diaInicioPeriodo(cliente.cnpj)
+  const movsTodasMes = todasMovs.filter(m => anoMesDeMov(m, diaInicio) === mes)
   const movsAtivas = movsTodasMes.filter(m => !m.cancelada)
 
   const flagsPallet = new Set(todasMovs.filter(m => m.observacoes?.includes('conta_como_pallet')).map(m => m.id))
@@ -194,7 +198,7 @@ function calcularMes(
   const saldoMes = saldos.find(s => anoMesDe(s.competencia) === mes)
   const volumeInicial = volumeInicialDoMes({
     mes, mesesAsc: mesesOrdenadosAsc, saldos: saldos as never, todasMovs: todasMovs as never,
-    encadear: cliente.modo_calculo === 'avery',
+    encadear: encadearEstoque(cliente), diaInicio,
   })
 
   const aliquota = saldoMes?.percentual_imposto ?? cliente.aliquota_imposto ?? 2
@@ -208,6 +212,7 @@ function calcularMes(
     ppPico,
     valorManual: saldoMes?.valor_pallet,
     valorCliente: cliente.valor_pallet,
+    cnpj: cliente.cnpj,
   })
   const ppPicoGraphics = graphicsNoPicoMes({ mes, volumeInicial, movsContab: movsContab as never, todasMovs: todasMovs as never })
   const valorPalletGraphics = cliente.valor_pallet_graphics ?? valorPallet
@@ -259,8 +264,9 @@ export async function gerarPlanilhaCliente(
   const nomeCli = cliente.nome_fantasia || cliente.nome
 
   // Meses com dados (ordem cronológica asc para carry-over; resumo/abas desc)
+  const diaInicio = diaInicioPeriodo(cliente.cnpj)
   const mesesAsc = Array.from(new Set(
-    todasMovs.map(anoMesDeMov).filter(Boolean)
+    todasMovs.map(m => anoMesDeMov(m, diaInicio)).filter(Boolean)
   )).sort()
   const mesesDesc = [...mesesAsc].reverse()
 
@@ -340,7 +346,8 @@ export async function gerarPlanilhaCliente(
     let linha = 1
     const titMes = ws.getCell(`A${linha}`)
     ws.mergeCells(`A${linha}:H${linha}`)
-    titMes.value = `${nomeCli} — ${mesLabel(mes)}`
+    const periodo = rotuloPeriodo(mes, diaInicio)
+    titMes.value = `${nomeCli} — ${mesLabel(mes)}${periodo ? ` (${periodo})` : ''}`
     titMes.font = { bold: true, size: 13, color: { argb: 'FF0D1B2E' } }
     linha += 2
 

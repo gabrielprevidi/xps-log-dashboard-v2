@@ -9,7 +9,7 @@ import {
 } from '@/lib/supabase-service'
 import { getUsuarioAtual } from '@/lib/admin-auth'
 import { getServerClient } from '@/lib/supabase'
-import { assertMesesAbertos, competenciaDe, respostaErro } from '@/lib/fechamento-guard'
+import { assertDatasAbertas, respostaErro } from '@/lib/fechamento-guard'
 
 export const dynamic = 'force-dynamic'
 
@@ -27,19 +27,16 @@ async function assertMovimentacaoEditavel(id: string, novos?: Record<string, any
 
   if (!mov) return
 
-  await assertMesesAbertos(mov.cliente_id, [
-    competenciaDe(mov.data_entrada),
-    competenciaDe(mov.data_saida),
-  ])
+  await assertDatasAbertas(mov.cliente_id, [mov.data_entrada, mov.data_saida])
 
   if (novos) {
     const clienteDestino = novos.cliente_id || mov.cliente_id
-    await assertMesesAbertos(clienteDestino, [
-      competenciaDe(novos.data_entrada),
-      competenciaDe(novos.data_saida),
+    await assertDatasAbertas(clienteDestino, [
+      novos.data_entrada,
+      novos.data_saida,
       // troca de cliente mantendo as datas atuais
-      novos.cliente_id ? competenciaDe(mov.data_entrada) : null,
-      novos.cliente_id ? competenciaDe(mov.data_saida) : null,
+      novos.cliente_id ? mov.data_entrada : null,
+      novos.cliente_id ? mov.data_saida : null,
     ])
   }
 }

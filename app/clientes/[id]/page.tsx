@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useRef } from 'react'
 import { useParams } from 'next/navigation'
 import Link from 'next/link'
 import {
@@ -14,7 +14,10 @@ import {
   ResponsiveContainer, LabelList, Legend,
 } from 'recharts'
 import { formatarMoeda, calcularPallets } from '@/lib/calculations'
-import { valorPalletEfetivo, calcularMesCliente, volumeInicialDoMes, graphicsNoPicoMes, armazenagemBase } from '@/lib/cliente-calculos'
+import {
+  valorPalletEfetivo, calcularMesCliente, volumeInicialDoMes, graphicsNoPicoMes, armazenagemBase,
+  anoMesDeMov, competenciaDaData, diaInicioPeriodo, diasDoPeriodo, rotuloPeriodo, encadearEstoque,
+} from '@/lib/cliente-calculos'
 import GraphicsPanel from '@/components/dashboard/GraphicsPanel'
 import { ehMovGraphics } from '@/lib/graphics-saldo'
 
@@ -114,13 +117,6 @@ function mesLabel(anoMes: string) {
   return `${nomes[+mes - 1]} ${ano}`
 }
 
-function anoMesDe(dataStr: string) {
-  return dataStr.slice(0, 7)
-}
-
-function anoMesDeMovimentacao(m: Movimentacao) {
-  return anoMesDe(m.data_entrada || m.data_saida || m.created_at || '')
-}
 
 function calcPPPico(volumeInicial: number, movs: Movimentacao[]) {
   // Agrupa por dia (igual ao gráfico) para evitar picos intradiários artificiais.
@@ -143,24 +139,24 @@ function calcPPPico(volumeInicial: number, movs: Movimentacao[]) {
   return pico
 }
 
-function gerarDadosGrafico(volumeInicial: number, movs: Movimentacao[], anoMes: string) {
-  const [ano, mes] = anoMes.split('-').map(Number)
-  const ultimoDia = new Date(ano, mes, 0).getDate()
-  const porDia: Record<number, number> = {}
+function gerarDadosGrafico(volumeInicial: number, movs: Movimentacao[], anoMes: string, diaInicio = 1) {
+  // Indexado pela data completa: no período 16→15 (FLEXCOAT) o mesmo número de
+  // dia aparece em dois meses diferentes.
+  const porData: Record<string, number> = {}
   for (const m of movs) {
-    const data = m.data_entrada || m.data_saida || ''
+    const data = (m.data_entrada || m.data_saida || '').slice(0, 10)
     if (!data) continue  // movimentações sem data são ignoradas no gráfico diário
-    const dia = parseInt(data.slice(8, 10))
     const delta = m.tipo_movimentacao === 'entrada'
       ? (m.pallets_entrada || 0)
       : -(m.pallets_saida || 0)
-    porDia[dia] = (porDia[dia] || 0) + delta
+    porData[data] = (porData[data] || 0) + delta
   }
   let saldo = volumeInicial
   const dados: { dia: string; saldo: number }[] = []
-  for (let d = 1; d <= ultimoDia; d++) {
-    saldo += (porDia[d] || 0)
-    dados.push({ dia: String(d).padStart(2, '0'), saldo: Math.max(0, saldo) })
+  for (const data of diasDoPeriodo(anoMes, diaInicio)) {
+    saldo += (porData[data] || 0)
+    const dia = diaInicio > 1 ? `${data.slice(8, 10)}/${data.slice(5, 7)}` : data.slice(8, 10)
+    dados.push({ dia, saldo: Math.max(0, saldo) })
   }
   return dados
 }
@@ -456,6 +452,16 @@ export default function ClienteDetailPage() {
 
   useEffect(() => { carregarDados() }, [carregarDados])
 
+  // FLEXCOAT (período 16→15): abre na competência em que cai a data de hoje —
+  // depois do dia 15 já é a do mês seguinte. Só no primeiro carregamento.
+  const mesInicialAjustado = useRef(false)
+  useEffect(() => {
+    if (!cliente || mesInicialAjustado.current) return
+    mesInicialAjustado.current = true
+    const dia = diaInicioPeriodo(cliente.cnpj)
+    if (dia > 1) setMesAtual(competenciaDaData(new Date().toLocaleDateString('sv-SE'), dia))
+  }, [cliente])
+
   // ── cobranças adicionais por mês ──
   const carregarCobrancas = useCallback(async () => {
     try {
@@ -487,6 +493,10 @@ export default function ClienteDetailPage() {
   )
 
   // ── derived ──
+  // Período de cobrança: mês do calendário, ou 16→15 na FLEXCOAT.
+  const diaInicio = diaInicioPeriodo(cliente?.cnpj)
+  const periodoTexto = rotuloPeriodo(mesAtual, diaInicio)
+  const anoMesDeMovimentacao = (m: Movimentacao) => anoMesDeMov(m, diaInicio)
   const mesesComDados = Array.from(new Set([
     ...todasMovs.map(m => anoMesDeMovimentacao(m)).filter(Boolean),
     mesAtual,
@@ -506,6 +516,7 @@ export default function ClienteDetailPage() {
     cobrar_separacao_sacaria: cliente?.cobrar_separacao_sacaria ?? false,
     modo_calculo: cliente?.modo_calculo ?? null,
     somar_armazenagem_no_total: cliente?.somar_armazenagem_no_total ?? false,
+    cnpj: cliente?.cnpj ?? null,
   }
 
   // movimentações ativas do mês (excluindo canceladas para cálculos)
@@ -625,7 +636,7 @@ export default function ClienteDetailPage() {
 
   const volumeInicial = volumeInicialDoMes({
     mes: mesAtual, mesesAsc: [...mesesComDados].sort(), saldos: saldosMensais,
-    todasMovs: todasMovs as never, encadear: cliente?.modo_calculo === 'avery',
+    todasMovs: todasMovs as never, encadear: encadearEstoque(cliente), diaInicio,
   })
 
   const aliquota = saldoMes?.percentual_imposto ?? cliente?.aliquota_imposto ?? 2
@@ -646,6 +657,7 @@ export default function ClienteDetailPage() {
     ppPico,
     valorManual: saldoMes?.valor_pallet,
     valorCliente: cliente?.valor_pallet,
+    cnpj: cliente?.cnpj,
   })
   const valorPalletGraphics = cliente?.valor_pallet_graphics ?? valorPallet
   const armazBase = armazenagemBase({ ppPico, graphicsNoPico, valorPallet, valorPalletGraphics })
@@ -1231,7 +1243,7 @@ export default function ClienteDetailPage() {
     window.print()
   }
 
-  const dadosGrafico = gerarDadosGrafico(volumeInicial, movsParaContabilizacao, mesAtual)
+  const dadosGrafico = gerarDadosGrafico(volumeInicial, movsParaContabilizacao, mesAtual, diaInicio)
   const picoValor = dadosGrafico.reduce((max, d) => d.saldo > max ? d.saldo : max, 0)
 
   const fechamentoMes = fechamentos.find(f => f.competencia.slice(0, 7) === mesAtual)
@@ -1316,7 +1328,7 @@ export default function ClienteDetailPage() {
       {/* Título exclusivo do PDF (o seletor de mês some na impressão) */}
       <div className="hidden print:block mb-4">
         <h2 className="text-lg font-bold text-[#0d1b2e]">
-          Fechamento — {mesLabel(mesAtual)}
+          Fechamento — {mesLabel(mesAtual)}{periodoTexto ? ` (${periodoTexto})` : ''}
         </h2>
         <p className="text-xs text-gray-500">
           {fechamentoMes?.fechado_em
@@ -1357,7 +1369,9 @@ export default function ClienteDetailPage() {
         >
           <ChevronRight className="w-4 h-4" />
         </button>
-        <span className="text-sm text-gray-400">— movimentações de {mesLabel(mesAtual)}</span>
+        <span className="text-sm text-gray-400">
+          — movimentações de {periodoTexto ? `${periodoTexto} (período 16 a 15)` : mesLabel(mesAtual)}
+        </span>
 
         <div className="ml-auto flex items-center gap-2">
           {/* Botão reabrir (aparece quando há fechamento) */}

@@ -67,7 +67,7 @@ export interface ResultadoEmail {
 }
 
 /** Cache dos clientes por execução — evita reconsultar a cada anexo. */
-type Cliente = { id: string; nome: string; nome_fantasia: string | null; modo_calculo: string | null }
+type Cliente = { id: string; nome: string; nome_fantasia: string | null; modo_calculo: string | null; cnpj: string | null }
 let cacheClientes: Map<string, Cliente> | null = null
 
 async function clientesPorId(): Promise<Map<string, Cliente>> {
@@ -75,7 +75,7 @@ async function clientesPorId(): Promise<Map<string, Cliente>> {
   const supabase = getServerClient()
   const { data } = await supabase
     .from('clientes')
-    .select('id, nome, nome_fantasia, modo_calculo')
+    .select('id, nome, nome_fantasia, modo_calculo, cnpj')
   cacheClientes = new Map((data ?? []).map((c: Cliente) => [c.id, c]))
   return cacheClientes
 }
@@ -158,6 +158,7 @@ export async function prefiltrar(
     // 4. Operação precisa ser entrada ou saída
     const { tipo, motivo } = classificarOperacaoV2(
       nfe?.natureza_operacao ?? '', modo, nfe?.codigo_operacao_danfe, nfe?.cnpj_destinatario,
+      { cnpjCliente: cliente?.cnpj, cfops: [nfe?.cfop, ...(nfe?.itens ?? []).map(i => i.cfop)] },
     )
     if (!tipo) {
       descartes.push({ arquivo: anexo.nome_arquivo, motivo: motivo ?? 'operação não contabilizada', categoria: 'operacao_informativa' })

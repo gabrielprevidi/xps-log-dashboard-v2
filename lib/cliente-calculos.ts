@@ -26,6 +26,97 @@ export interface ClienteCalc {
   somar_armazenagem_no_total?: boolean | null
   /** Avery: valor por pallet do Graphics (produto "Graphics" do cadastro). Sem ele, vale o valor normal. */
   valor_pallet_graphics?: number | null
+  /** Usado para regras de um cliente só (período e tabela da FLEXCOAT). */
+  cnpj?: string | null
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// FLEXCOAT — período de cobrança e tabela de armazenagem próprios.
+//
+// Período: do dia 16 de um mês ao dia 15 do mês seguinte. A competência leva
+// o nome do mês em que o período TERMINA: "Nov 2026" = 16/10 a 15/11/2026.
+//
+// Armazenagem por faixa de PP Pico, valor ÚNICO da faixa aplicado a todo o
+// volume (mesmo critério da tabela da Fedrigoni):
+//   1–500 → R$60 | 501–1500 → R$58 | 1501–3000 → R$56 | 3001+ → R$50
+// ─────────────────────────────────────────────────────────────────────────
+export const CNPJ_FLEXCOAT = '48062707000159'
+
+function soDigitos(v?: string | null): string {
+  return String(v ?? '').replace(/\D/g, '')
+}
+
+export function ehFlexcoat(cnpj?: string | null): boolean {
+  return soDigitos(cnpj) === CNPJ_FLEXCOAT
+}
+
+/**
+ * Estoque inicial encadeado mês a mês (ver `volumeInicialDoMes`). Avery e
+ * FLEXCOAT — esta sem nenhum mês fechado quando a regra entrou (26/11/2026).
+ */
+export function encadearEstoque(cliente: { modo_calculo?: string | null; cnpj?: string | null } | null | undefined): boolean {
+  return cliente?.modo_calculo === 'avery' || ehFlexcoat(cliente?.cnpj)
+}
+
+/** Dia em que começa o período de cobrança do cliente (1 = mês do calendário). */
+export function diaInicioPeriodo(cnpj?: string | null): number {
+  return ehFlexcoat(cnpj) ? 16 : 1
+}
+
+export function valorPalletFaixaFlexcoat(ppPico: number): number {
+  if (ppPico <= 500) return 60
+  if (ppPico <= 1500) return 58
+  if (ppPico <= 3000) return 56
+  return 50
+}
+
+function somarMes(anoMes: string, delta: number): string {
+  const [a, m] = anoMes.split('-').map(Number)
+  const d = new Date(Date.UTC(a, m - 1 + delta, 1))
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`
+}
+
+/**
+ * Competência ('YYYY-MM') de uma data. Com período começando no dia N > 1,
+ * datas a partir do dia N pertencem à competência do mês seguinte.
+ */
+export function competenciaDaData(dataStr: string, diaInicio = 1): string {
+  const anoMes = (dataStr || '').slice(0, 7)
+  if (diaInicio <= 1 || anoMes.length < 7) return anoMes
+  const dia = Number(dataStr.slice(8, 10))
+  return dia >= diaInicio ? somarMes(anoMes, 1) : anoMes
+}
+
+/** Primeiro e último dia ('YYYY-MM-DD') do período de uma competência. */
+export function periodoDaCompetencia(mes: string, diaInicio = 1): { inicio: string; fim: string } {
+  const [a, m] = mes.split('-').map(Number)
+  if (diaInicio <= 1) {
+    const ultimo = new Date(Date.UTC(a, m, 0)).getUTCDate()
+    return { inicio: `${mes}-01`, fim: `${mes}-${String(ultimo).padStart(2, '0')}` }
+  }
+  const dd = (n: number) => String(n).padStart(2, '0')
+  return { inicio: `${somarMes(mes, -1)}-${dd(diaInicio)}`, fim: `${mes}-${dd(diaInicio - 1)}` }
+}
+
+/** "16/10 a 15/11" para períodos fora do mês do calendário; null no padrão. */
+export function rotuloPeriodo(mes: string, diaInicio = 1): string | null {
+  if (diaInicio <= 1 || !mes) return null
+  const { inicio, fim } = periodoDaCompetencia(mes, diaInicio)
+  const br = (iso: string) => `${iso.slice(8, 10)}/${iso.slice(5, 7)}`
+  return `${br(inicio)} a ${br(fim)}`
+}
+
+/** Todos os dias ('YYYY-MM-DD') do período de uma competência, em ordem. */
+export function diasDoPeriodo(mes: string, diaInicio = 1): string[] {
+  const { inicio, fim } = periodoDaCompetencia(mes, diaInicio)
+  const dias: string[] = []
+  const d = new Date(`${inicio}T00:00:00Z`)
+  const f = new Date(`${fim}T00:00:00Z`)
+  while (d <= f) {
+    dias.push(d.toISOString().slice(0, 10))
+    d.setUTCDate(d.getUTCDate() + 1)
+  }
+  return dias
 }
 
 /**
@@ -45,6 +136,7 @@ export function valorPalletFaixaFedrigoni(ppPico: number): number {
 /**
  * Valor por pallet efetivo do mês.
  * - Fedrigoni (modo_calculo === 'fedrigoni'): tabela por faixa de PP Pico.
+ * - FLEXCOAT (por CNPJ): tabela própria por faixa de PP Pico.
  * - Demais: valor manual do mês > valor do cliente > padrão R$38.
  */
 export function valorPalletEfetivo(args: {
@@ -52,8 +144,10 @@ export function valorPalletEfetivo(args: {
   ppPico: number
   valorManual?: number | null
   valorCliente?: number | null
+  cnpj?: string | null
 }): number {
   if (args.modoCalculo === 'fedrigoni') return valorPalletFaixaFedrigoni(args.ppPico)
+  if (ehFlexcoat(args.cnpj)) return valorPalletFaixaFlexcoat(args.ppPico)
   return args.valorManual ?? args.valorCliente ?? 38
 }
 
@@ -73,8 +167,9 @@ export function anoMesDe(dataStr: string): string {
   return (dataStr || '').slice(0, 7)
 }
 
-export function anoMesDeMov(m: MovCalc): string {
-  return anoMesDe(m.data_entrada || m.data_saida || m.created_at || '')
+/** Competência de uma movimentação (respeita o período do cliente). */
+export function anoMesDeMov(m: MovCalc, diaInicio = 1): string {
+  return competenciaDaData(m.data_entrada || m.data_saida || m.created_at || '', diaInicio)
 }
 
 export function fatorDe(m: MovCalc, cliente: ClienteCalc): number {
@@ -222,8 +317,11 @@ export function volumeInicialDoMes(args: {
   saldos: SaldoCalc[]
   todasMovs: MovCalc[]
   encadear: boolean
+  /** Dia de início do período de cobrança (ver `diaInicioPeriodo`). */
+  diaInicio?: number
 }): number {
   const { mes, mesesAsc, saldos, todasMovs, encadear } = args
+  const diaInicio = args.diaInicio ?? 1
   const manual = saldos.find(s => anoMesDe(s.competencia) === mes)
   if (manual) return manual.volume_inicial
   const idx = mesesAsc.indexOf(mes)
@@ -232,7 +330,7 @@ export function volumeInicialDoMes(args: {
   const base = encadear
     ? volumeInicialDoMes({ ...args, mes: mesAnterior })
     : (saldos.find(s => anoMesDe(s.competencia) === mesAnterior)?.volume_inicial ?? 0)
-  const movsAnterior = todasMovs.filter(m => anoMesDeMov(m) === mesAnterior && !m.cancelada)
+  const movsAnterior = todasMovs.filter(m => anoMesDeMov(m, diaInicio) === mesAnterior && !m.cancelada)
   const ent = movsAnterior.reduce((s, m) => s + (m.pallets_entrada || 0), 0)
   const sai = movsAnterior.reduce((s, m) => s + (m.pallets_saida || 0), 0)
   return base + ent - sai
@@ -255,7 +353,8 @@ export function calcularMesCliente(args: {
   const cobrarSep = cliente.cobrar_separacao_sacaria === true
   const cobrarManuseio = cliente.cobrar_manuseio ?? true
 
-  const movsTodasMes = todasMovs.filter(m => anoMesDeMov(m) === mes)
+  const diaInicio = diaInicioPeriodo(cliente.cnpj)
+  const movsTodasMes = todasMovs.filter(m => anoMesDeMov(m, diaInicio) === mes)
   const movsAtivas = movsTodasMes.filter(m => !m.cancelada)
 
   const flagsPallet = new Set(
@@ -325,7 +424,7 @@ export function calcularMesCliente(args: {
   // Estoque inicial (saldo do mês ou carry-over do mês anterior)
   const saldoMes = saldos.find(s => anoMesDe(s.competencia) === mes)
   const volumeInicial = volumeInicialDoMes({
-    mes, mesesAsc, saldos, todasMovs, encadear: cliente.modo_calculo === 'avery',
+    mes, mesesAsc, saldos, todasMovs, encadear: encadearEstoque(cliente), diaInicio,
   })
 
   const aliquota = saldoMes?.percentual_imposto ?? cliente.aliquota_imposto ?? 2
@@ -340,6 +439,7 @@ export function calcularMesCliente(args: {
     ppPico,
     valorManual: saldoMes?.valor_pallet,
     valorCliente: cliente.valor_pallet,
+    cnpj: cliente.cnpj,
   })
   const ppPicoGraphics = graphicsNoPicoMes({ mes, volumeInicial, movsContab, todasMovs })
   const valorPalletGraphics = cliente.valor_pallet_graphics ?? valorPallet
@@ -379,6 +479,6 @@ export function calcularMesCliente(args: {
 }
 
 /** Lista de meses com dados (asc) a partir das movimentações. */
-export function mesesComDadosAsc(todasMovs: MovCalc[]): string[] {
-  return Array.from(new Set(todasMovs.map(anoMesDeMov).filter(Boolean))).sort()
+export function mesesComDadosAsc(todasMovs: MovCalc[], diaInicio = 1): string[] {
+  return Array.from(new Set(todasMovs.map(m => anoMesDeMov(m, diaInicio)).filter(Boolean))).sort()
 }

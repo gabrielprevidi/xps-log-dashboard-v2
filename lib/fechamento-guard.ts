@@ -1,4 +1,5 @@
 import { getServerClient } from '@/lib/supabase'
+import { competenciaDaData, diaInicioPeriodo } from '@/lib/cliente-calculos'
 
 /**
  * Bloqueio de meses fechados.
@@ -56,6 +57,20 @@ export async function assertMesAberto(clienteId?: string | null, competencia?: s
 export async function assertMesesAbertos(clienteId: string | null | undefined, competencias: (string | null | undefined)[]) {
   const unicas = Array.from(new Set(competencias.filter(Boolean) as string[]))
   for (const c of unicas) await assertMesAberto(clienteId, c)
+}
+
+/**
+ * Como `assertMesesAbertos`, mas a partir das DATAS da movimentação: converte
+ * cada data na competência do cliente (período 16→15 na FLEXCOAT).
+ */
+export async function assertDatasAbertas(clienteId: string | null | undefined, datas: (string | null | undefined)[]) {
+  if (!clienteId) return
+  const validas = datas.filter(Boolean) as string[]
+  if (validas.length === 0) return
+  const { data: cliente } = await getServerClient()
+    .from('clientes').select('cnpj').eq('id', clienteId).maybeSingle()
+  const dia = diaInicioPeriodo(cliente?.cnpj)
+  await assertMesesAbertos(clienteId, validas.map(d => competenciaDaData(d.slice(0, 10), dia)))
 }
 
 /** Status HTTP e mensagem para um erro qualquer vindo dos guards. */

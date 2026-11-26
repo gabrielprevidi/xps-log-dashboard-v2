@@ -96,8 +96,14 @@ export function classificarOperacaoV2(
   modo: string,
   codigoOperacaoDanfe?: number | null,
   cnpjDestinatario?: string | null,
+  /** Regras de um cliente só: CNPJ do cliente identificado e CFOPs lidos da nota. */
+  extra?: { cnpjCliente?: string | null; cfops?: (string | null | undefined)[] },
 ): { tipo: 'entrada' | 'saida' | null; motivo?: string } {
   const n = normalizarNatureza(natureza).trim()
+
+  if (String(extra?.cnpjCliente ?? '').replace(/\D/g, '') === CNPJ_FLEXCOAT) {
+    return classificarOperacaoFlexcoat(n, natureza, extra?.cfops ?? [])
+  }
 
   // ─────────────────────────────────────────────────────────────────────
   // AVERY — natureza "ABSENT".
@@ -179,6 +185,40 @@ export function classificarOperacaoV2(
   }
 
   return { tipo: tipoOperacaoPorNatureza(natureza) }
+}
+
+const CNPJ_FLEXCOAT = '48062707000159'
+
+/**
+ * FLEXCOAT — regra própria (o cliente está no modo 'padrao').
+ *
+ * A remessa para a XPS vem com a natureza abreviada "REM P/ARMAZEM GERAL" e
+ * CFOP 5905. Nenhum padrão de entrada da regra genérica reconhece "REM", então
+ * de out/2026 em diante essas notas caíram em SAÍDA. A mesma caixa recebe as
+ * notas de importação da FLEXCOAT ("IMPORTACAO MAT PRIMA", "REMESSA
+ * IMPORTACAO"), que antecedem a remessa ao armazém e também viravam saída.
+ *
+ *   entrada = CFOP 5905/6905, ou natureza "REM(ESSA) P/ ARMAZEM GERAL"
+ *   saída   = retorno (natureza "retorno" ou CFOP 5906/6906/5907/6907)
+ *   resto   = não movimenta o armazém (importação, venda, etc.)
+ */
+function classificarOperacaoFlexcoat(
+  n: string,
+  natureza: string,
+  cfops: (string | null | undefined)[],
+): { tipo: 'entrada' | 'saida' | null; motivo?: string } {
+  const c = new Set(cfops.map(x => String(x ?? '').replace(/\D/g, '')).filter(Boolean))
+  if (n.includes('retorno') || ['5906', '6906', '5907', '6907'].some(x => c.has(x))) {
+    return { tipo: 'saida' }
+  }
+  if (c.has('5905') || c.has('6905')) return { tipo: 'entrada' }
+  if (/\brem(essa)?\b[^a-z]*(p\/?|para|a)?\s*armazem/.test(n) || n.includes('armazem geral')) {
+    return { tipo: 'entrada' }
+  }
+  return {
+    tipo: null,
+    motivo: `FLEXCOAT: só contam remessa p/ armazém geral (CFOP 5905) e retorno — "${natureza || 'vazia'}"`,
+  }
 }
 
 /**

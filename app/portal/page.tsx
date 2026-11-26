@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 import {
   Package, ArrowDownToLine, ArrowUpFromLine, TrendingUp,
@@ -14,6 +14,7 @@ import {
 import { formatarMoeda } from '@/lib/calculations'
 import {
   calcularMesCliente, mesesComDadosAsc, anoMesDe, fatorDe, contraparteDe,
+  diaInicioPeriodo, competenciaDaData, diasDoPeriodo,
   type MovCalc,
 } from '@/lib/cliente-calculos'
 
@@ -62,20 +63,19 @@ function fmtData(data: string | null) {
   return data ? new Date(data + 'T12:00:00').toLocaleDateString('pt-BR') : '—'
 }
 
-function gerarGrafico(vol: number, movsContab: MovCalc[], anoMesStr: string) {
-  const [ano, mes] = anoMesStr.split('-').map(Number)
-  const ultimo = new Date(ano, mes, 0).getDate()
-  const porDia: Record<number, number> = {}
+function gerarGrafico(vol: number, movsContab: MovCalc[], anoMesStr: string, diaInicio = 1) {
+  // Indexado pela data completa: no período 16→15 o mesmo dia aparece em dois meses.
+  const porData: Record<string, number> = {}
   for (const m of movsContab) {
-    const d = parseInt((m.data_entrada || m.data_saida || '').slice(8, 10))
+    const d = (m.data_entrada || m.data_saida || '').slice(0, 10)
     if (!d) continue
     const delta = m.tipo_movimentacao === 'entrada' ? (m.pallets_entrada || 0) : -(m.pallets_saida || 0)
-    porDia[d] = (porDia[d] || 0) + delta
+    porData[d] = (porData[d] || 0) + delta
   }
   let saldo = vol
-  return Array.from({ length: ultimo }, (_, i) => {
-    saldo = Math.max(0, saldo + (porDia[i + 1] || 0))
-    return { dia: String(i + 1).padStart(2, '0'), saldo }
+  return diasDoPeriodo(anoMesStr, diaInicio).map(d => {
+    saldo = Math.max(0, saldo + (porData[d] || 0))
+    return { dia: diaInicio > 1 ? `${d.slice(8, 10)}/${d.slice(5, 7)}` : d.slice(8, 10), saldo }
   })
 }
 
@@ -132,6 +132,15 @@ export default function PortalPage() {
 
   useEffect(() => { carregarDados() }, [carregarDados])
 
+  // Período 16→15 (FLEXCOAT): abre na competência da data de hoje, uma vez.
+  const mesInicialAjustado = useRef(false)
+  useEffect(() => {
+    if (!cliente || mesInicialAjustado.current) return
+    mesInicialAjustado.current = true
+    const dia = diaInicioPeriodo(cliente.cnpj)
+    if (dia > 1) setMesAtual(competenciaDaData(new Date().toLocaleDateString('sv-SE'), dia))
+  }, [cliente])
+
   // Cobranças adicionais do mês selecionado
   const carregarCobrancas = useCallback(async () => {
     if (!cliente) return
@@ -152,7 +161,8 @@ export default function PortalPage() {
   }
 
   // ── derived ──
-  const mesesAsc = mesesComDadosAsc(movs)
+  const diaInicio = diaInicioPeriodo(cliente?.cnpj)
+  const mesesAsc = mesesComDadosAsc(movs, diaInicio)
   const mesesComDados = Array.from(new Set([...mesesAsc, mesAtual])).sort().reverse()
 
   const calc = cliente
@@ -160,7 +170,7 @@ export default function PortalPage() {
     : null
 
   const temCategorias = cliente?.modo_calculo !== 'avery' && produtos.length > 0
-  const dadosGrafico = calc ? gerarGrafico(calc.volumeInicial, calc.movsContab, mesAtual) : []
+  const dadosGrafico = calc ? gerarGrafico(calc.volumeInicial, calc.movsContab, mesAtual, diaInicio) : []
   const picoValor = dadosGrafico.reduce((mx, d) => (d.saldo > mx ? d.saldo : mx), 0)
 
   const fechamentosVisiveis = fechamentos.filter(f => f.status !== 'aberto')
