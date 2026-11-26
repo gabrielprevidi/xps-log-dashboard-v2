@@ -10,7 +10,7 @@
 
 import ExcelJS from 'exceljs'
 import {
-  valorPalletEfetivo, volumeInicialDoMes, graphicsNoPicoMes, armazenagemBase,
+  valorPalletEfetivo, volumeInicialDoMes, picosGeralEGraphics, armazenagemBase, periodoDaCompetencia,
   competenciaDaData, diaInicioPeriodo, rotuloPeriodo, encadearEstoque,
 } from './cliente-calculos'
 
@@ -78,6 +78,7 @@ interface ResumoMes {
   totalSaidas: number
   saldoFinal: number
   ppPico: number
+  ppPicoGeral: number
   ppPicoGraphics: number
   valorPalletGraphics: number
   valorPallet: number
@@ -214,9 +215,12 @@ function calcularMes(
     valorCliente: cliente.valor_pallet,
     cnpj: cliente.cnpj,
   })
-  const ppPicoGraphics = graphicsNoPicoMes({ mes, volumeInicial, movsContab: movsContab as never, todasMovs: todasMovs as never })
+  const { ppPicoGeral, ppPicoGraphics } = picosGeralEGraphics({
+    inicioPeriodo: periodoDaCompetencia(mes, diaInicio).inicio, volumeInicial,
+    movsContab: movsContab as never, todasMovs: todasMovs as never,
+  })
   const valorPalletGraphics = cliente.valor_pallet_graphics ?? valorPallet
-  const armazBase = armazenagemBase({ ppPico, graphicsNoPico: ppPicoGraphics, valorPallet, valorPalletGraphics })
+  const armazBase = armazenagemBase({ ppPicoGeral, ppPicoGraphics, valorPallet, valorPalletGraphics })
   const armazTotal = armazBase * (1 + aliquota / 100)
 
   const separacao =
@@ -241,7 +245,7 @@ function calcularMes(
 
   return {
     mes, volumeInicial, totalEntradas, totalSaidas, saldoFinal, ppPico,
-    ppPicoGraphics, valorPalletGraphics, valorPallet, aliquota, armazBase, armazTotal, manuseio, separacao,
+    ppPicoGeral, ppPicoGraphics, valorPalletGraphics, valorPallet, aliquota, armazBase, armazTotal, manuseio, separacao,
     cobrancas: totalCobrancas, totalAdicionais: manuseio + separacao + totalCobrancas,
     status, movsContab, movsSeparacao, excessos, movsTodasMes, cobrancasMes,
   }
@@ -307,7 +311,10 @@ export async function gerarPlanilhaCliente(
     const r = resumoPorMes.get(mes)!
     const row = wsResumo.addRow([
       mesLabel(mes), r.volumeInicial, r.totalEntradas, r.totalSaidas, r.saldoFinal,
-      r.ppPico, r.valorPallet, r.armazBase, r.aliquota, r.armazTotal,
+      // Avery com Graphics: dois picos, cada um no seu valor
+      r.ppPicoGraphics > 0 ? `${r.ppPicoGeral} gerais + ${r.ppPicoGraphics} Graphics` : r.ppPico,
+      r.ppPicoGraphics > 0 ? `${r.valorPallet.toFixed(2)} / ${r.valorPalletGraphics.toFixed(2)} Graphics` : r.valorPallet,
+      r.armazBase, r.aliquota, r.armazTotal,
       r.manuseio, r.separacao, r.cobrancas, r.totalAdicionais, r.status,
     ])
     row.getCell(7).numFmt = MOEDA
@@ -357,12 +364,17 @@ export async function gerarPlanilhaCliente(
       ['Entradas (pallets)', r.totalEntradas],
       ['Saídas (pallets)', r.totalSaidas],
       ['Saldo Final (pallets)', r.saldoFinal],
-      ['PP Pico (pallets)', r.ppPico],
       ...(r.ppPicoGraphics > 0 ? [
-        ['  dos quais Graphics (pallets)', r.ppPicoGraphics],
-        ['  Valor por Pallet Graphics', r.valorPalletGraphics, MOEDA],
-      ] as Array<[string, any, string?]> : []),
-      ['Valor por Pallet', r.valorPallet, MOEDA],
+        ['PP Pico Produtos Gerais (pallets)', r.ppPicoGeral],
+        ['Valor por Pallet Produtos Gerais', r.valorPallet, MOEDA],
+        ['Armazenagem Produtos Gerais', r.ppPicoGeral * r.valorPallet, MOEDA],
+        ['PP Pico Graphics (pallets)', r.ppPicoGraphics],
+        ['Valor por Pallet Graphics', r.valorPalletGraphics, MOEDA],
+        ['Armazenagem Graphics', r.ppPicoGraphics * r.valorPalletGraphics, MOEDA],
+      ] as Array<[string, any, string?]> : [
+        ['PP Pico (pallets)', r.ppPico],
+        ['Valor por Pallet', r.valorPallet, MOEDA],
+      ] as Array<[string, any, string?]>),
       ['Armazenagem Base', r.armazBase, MOEDA],
       ['Imposto', r.aliquota, '0.00"%"'],
       ['Armazenagem c/ Imposto', r.armazTotal, MOEDA],

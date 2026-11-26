@@ -1998,6 +1998,26 @@ export async function marcarVerificacaoMovimentacao(id: string, verificado: bool
   return data
 }
 
+/**
+ * Conferência de um lançamento do Graphics (Avery Dennison) — mesmo controle de
+ * `marcarVerificacaoMovimentacao`, na tabela `graphics_movimentacoes` (migration 033).
+ */
+export async function marcarVerificacaoGraphics(id: string, verificado: boolean, ator?: Ator) {
+  const supabase = getServerClient()
+  const update = verificado
+    ? { verificado: true, verificado_em: new Date().toISOString(), verificado_por: ator?.id ?? null, verificado_por_nome: ator?.nome ?? null }
+    : { verificado: false, verificado_em: null, verificado_por: null, verificado_por_nome: null }
+  const { data, error } = await supabase
+    .from('graphics_movimentacoes')
+    .update(update)
+    .eq('id', id)
+    .select('id, verificado, verificado_em, verificado_por_nome')
+    .single()
+  if (error) throw error
+  await registrarLog(ator, 'verificar', 'graphics_movimentacao', id, { verificado })
+  return data
+}
+
 export async function criarMovimentacaoManual(dados: {
   cliente_id: string
   tipo_movimentacao: 'entrada' | 'saida'

@@ -15,8 +15,8 @@ import {
 } from 'recharts'
 import { formatarMoeda, calcularPallets } from '@/lib/calculations'
 import {
-  valorPalletEfetivo, calcularMesCliente, volumeInicialDoMes, graphicsNoPicoMes, armazenagemBase,
-  anoMesDeMov, competenciaDaData, diaInicioPeriodo, diasDoPeriodo, rotuloPeriodo, encadearEstoque,
+  valorPalletEfetivo, calcularMesCliente, volumeInicialDoMes, picosGeralEGraphics, armazenagemBase,
+  anoMesDeMov, competenciaDaData, diaInicioPeriodo, diasDoPeriodo, rotuloPeriodo, encadearEstoque, periodoDaCompetencia,
 } from '@/lib/cliente-calculos'
 import GraphicsPanel from '@/components/dashboard/GraphicsPanel'
 import { ehMovGraphics } from '@/lib/graphics-saldo'
@@ -646,9 +646,10 @@ export default function ClienteDetailPage() {
   const saldoFinal = volumeInicial + totalEntradas - totalSaidas
   const ppPico = calcPPPico(volumeInicial, movsParaContabilizacao)
 
-  // Avery: parte do pico que é Graphics (cobrada ao valor do produto Graphics)
-  const graphicsNoPico = graphicsNoPicoMes({
-    mes: mesAtual, volumeInicial, movsContab: movsParaContabilizacao as never, todasMovs: todasMovs as never,
+  // Avery: produtos gerais e Graphics têm picos e valores por pallet separados
+  const { ppPicoGeral, ppPicoGraphics, temGraphics } = picosGeralEGraphics({
+    inicioPeriodo: periodoDaCompetencia(mesAtual, diaInicio).inicio, volumeInicial,
+    movsContab: movsParaContabilizacao as never, todasMovs: todasMovs as never,
   })
 
   // Fedrigoni: valor por pallet pela tabela de faixa de PP Pico (depende do pico).
@@ -660,7 +661,9 @@ export default function ClienteDetailPage() {
     cnpj: cliente?.cnpj,
   })
   const valorPalletGraphics = cliente?.valor_pallet_graphics ?? valorPallet
-  const armazBase = armazenagemBase({ ppPico, graphicsNoPico, valorPallet, valorPalletGraphics })
+  const armazGeral = ppPicoGeral * valorPallet
+  const armazGraphics = ppPicoGraphics * valorPalletGraphics
+  const armazBase = armazenagemBase({ ppPicoGeral, ppPicoGraphics, valorPallet, valorPalletGraphics })
   const armazTotal = armazBase * (1 + aliquota / 100)
 
   // ── resumo por categoria de produto ──
@@ -1693,24 +1696,46 @@ export default function ClienteDetailPage() {
         <div className="bg-[#0d1b2e] rounded-2xl p-4">
           <div className="flex items-center gap-2 mb-2">
             <TrendingUp className="w-4 h-4 text-blue-300" />
-            <span className="text-xs text-blue-300 uppercase tracking-wider">PP Pico</span>
+            <span className="text-xs text-blue-300 uppercase tracking-wider">{temGraphics ? 'PP Pico Geral' : 'PP Pico'}</span>
           </div>
-          <p className="text-3xl font-bold text-white">{ppPico}</p>
-          <p className="text-xs text-blue-300 mt-1">pallets — base cobrança</p>
-          {graphicsNoPico > 0 && (
-            <p className="text-xs text-blue-200 mt-1">inclui Graphics: {graphicsNoPico} · demais: {ppPico - graphicsNoPico}</p>
+          <p className="text-3xl font-bold text-white">{temGraphics ? ppPicoGeral : ppPico}</p>
+          <p className="text-xs text-blue-300 mt-1">{temGraphics ? 'produtos gerais — base cobrança' : 'pallets — base cobrança'}</p>
+          {temGraphics && (
+            <p className="text-xs text-blue-200 mt-1">Graphics: pico próprio de {ppPicoGraphics}</p>
           )}
         </div>
       </div>
 
+      {/* Avery: cobrança separada — produtos gerais e Graphics, cada um pelo seu pico e valor */}
+      {temGraphics && (
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
+          <div className="bg-white rounded-2xl border border-gray-100 p-5">
+            <p className="text-xs text-gray-400 uppercase tracking-wider mb-2">Produtos gerais</p>
+            <div className="flex items-baseline justify-between gap-3">
+              <p className="text-3xl font-bold text-[#0d1b2e]">{ppPicoGeral} <span className="text-sm font-medium text-gray-400">pallets no pico</span></p>
+              <p className="text-xl font-bold text-[#0d1b2e]">{formatarMoeda(armazGeral)}</p>
+            </div>
+            <p className="text-xs text-gray-400 mt-1">{ppPicoGeral} × {formatarMoeda(valorPallet)} · s/ imposto</p>
+          </div>
+          <div className="bg-blue-50 rounded-2xl border border-blue-100 p-5">
+            <p className="text-xs text-blue-700 uppercase tracking-wider mb-2">Graphics</p>
+            <div className="flex items-baseline justify-between gap-3">
+              <p className="text-3xl font-bold text-blue-900">{ppPicoGraphics} <span className="text-sm font-medium text-blue-500">pallets no pico</span></p>
+              <p className="text-xl font-bold text-blue-900">{formatarMoeda(armazGraphics)}</p>
+            </div>
+            <p className="text-xs text-blue-600 mt-1">{ppPicoGraphics} × {formatarMoeda(valorPalletGraphics)} · s/ imposto</p>
+          </div>
+        </div>
+      )}
+
       {/* Armazenagem */}
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-6">
         <div className="bg-white rounded-2xl border border-gray-100 p-5">
-          <p className="text-xs text-gray-400 uppercase tracking-wider mb-2">Armazenagem s/ imposto</p>
+          <p className="text-xs text-gray-400 uppercase tracking-wider mb-2">Armazenagem s/ imposto{temGraphics ? ' (gerais + Graphics)' : ''}</p>
           <p className="text-3xl font-bold text-[#0d1b2e]">{formatarMoeda(armazBase)}</p>
           <p className="text-xs text-gray-400 mt-1">
-            {graphicsNoPico > 0
-              ? `${ppPico - graphicsNoPico} pallets × ${formatarMoeda(valorPallet)} + ${graphicsNoPico} Graphics × ${formatarMoeda(valorPalletGraphics)}`
+            {temGraphics
+              ? `${formatarMoeda(armazGeral)} gerais + ${formatarMoeda(armazGraphics)} Graphics`
               : `${ppPico} pallets × ${formatarMoeda(valorPallet)}`}
           </p>
         </div>
@@ -2840,7 +2865,8 @@ export default function ClienteDetailPage() {
                     mesesAsc: mesesHistoricoAsc,
                   })
                   const { volumeInicial: volIni, totalEntradas: ent, totalSaidas: sai } = r
-                  const { saldoFinal: saldoFinalM, ppPico: pico, armazBase: base, armazTotal: total } = r
+                  const { saldoFinal: saldoFinalM, armazBase: base, armazTotal: total } = r
+                  const pico = r.ppPicoGraphics > 0 ? `${r.ppPicoGeral} + ${r.ppPicoGraphics} Gfx` : String(r.ppPico)
                   const isAtual = mes === mesAtual
                   return (
                     <tr

@@ -284,11 +284,27 @@ export default function PortalPage() {
             <p className="text-xs text-gray-400 mt-1">pallets</p>
           </div>
           <div className="bg-[#0d1b2e] rounded-2xl p-4">
-            <div className="flex items-center gap-2 mb-2"><TrendingUp className="w-4 h-4 text-blue-300" /><span className="text-xs text-blue-300 uppercase tracking-wider">PP Pico</span></div>
-            <p className="text-3xl font-bold text-white">{calc.ppPico}</p>
-            <p className="text-xs text-blue-300 mt-1">base cobrança</p>
+            <div className="flex items-center gap-2 mb-2"><TrendingUp className="w-4 h-4 text-blue-300" /><span className="text-xs text-blue-300 uppercase tracking-wider">{calc.ppPicoGraphics > 0 ? 'PP Pico Geral' : 'PP Pico'}</span></div>
+            <p className="text-3xl font-bold text-white">{calc.ppPicoGraphics > 0 ? calc.ppPicoGeral : calc.ppPico}</p>
+            <p className="text-xs text-blue-300 mt-1">{calc.ppPicoGraphics > 0 ? `base cobrança · Graphics: ${calc.ppPicoGraphics}` : 'base cobrança'}</p>
           </div>
         </div>
+
+        {/* Avery: produtos gerais e Graphics cobrados cada um pelo seu pico */}
+        {calc.ppPicoGraphics > 0 && (
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
+            <div className="bg-white rounded-2xl border border-gray-100 p-5">
+              <p className="text-xs text-gray-400 uppercase tracking-wider mb-2">Produtos gerais</p>
+              <p className="text-2xl font-bold text-[#0d1b2e]">{formatarMoeda(calc.armazGeral)}</p>
+              <p className="text-xs text-gray-400 mt-1">{calc.ppPicoGeral} pallets no pico × {formatarMoeda(calc.valorPallet)}</p>
+            </div>
+            <div className="bg-blue-50 rounded-2xl border border-blue-100 p-5">
+              <p className="text-xs text-blue-700 uppercase tracking-wider mb-2">Graphics</p>
+              <p className="text-2xl font-bold text-blue-900">{formatarMoeda(calc.armazGraphics)}</p>
+              <p className="text-xs text-blue-600 mt-1">{calc.ppPicoGraphics} pallets no pico × {formatarMoeda(calc.valorPalletGraphics)}</p>
+            </div>
+          </div>
+        )}
 
         {/* Armazenagem */}
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-6">
@@ -297,7 +313,7 @@ export default function PortalPage() {
             <p className="text-3xl font-bold text-[#0d1b2e]">{formatarMoeda(calc.armazBase)}</p>
             <p className="text-xs text-gray-400 mt-1">
               {calc.ppPicoGraphics > 0
-                ? `${calc.ppPico - calc.ppPicoGraphics} pallets × ${formatarMoeda(calc.valorPallet)} + ${calc.ppPicoGraphics} Graphics × ${formatarMoeda(calc.valorPalletGraphics)}`
+                ? `${formatarMoeda(calc.armazGeral)} gerais + ${formatarMoeda(calc.armazGraphics)} Graphics`
                 : `${calc.ppPico} pallets × ${formatarMoeda(calc.valorPallet)}`}
             </p>
           </div>

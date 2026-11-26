@@ -224,9 +224,14 @@ export interface ResultadoMes {
   totalEntradas: number
   totalSaidas: number
   saldoFinal: number
+  /** Pico físico do estoque total (geral + Graphics) — o que o gráfico mostra. */
   ppPico: number
-  /** Parte do PP pico que é Graphics (cobrada a `valorPalletGraphics`). */
+  /** Avery: pico dos produtos gerais, cobrado a `valorPallet`. Sem Graphics, = ppPico. */
+  ppPicoGeral: number
+  /** Avery: pico próprio do Graphics, cobrado a `valorPalletGraphics`. 0 sem Graphics. */
   ppPicoGraphics: number
+  armazGeral: number
+  armazGraphics: number
   valorPalletGraphics: number
   armazBase: number
   armazTotal: number
@@ -270,36 +275,54 @@ export function picoComData(volumeInicial: number, movs: MovCalc[]): { pico: num
 }
 
 /**
- * Quantos pallets do PP pico são do Graphics: a ocupação dele (soma das linhas
- * sintéticas "gfx:") até o dia do pico, ou antes do mês quando o pico é o estoque
- * inicial. O Graphics tem valor por pallet próprio (`valor_pallet_graphics`).
+ * Avery Dennison: picos SEPARADOS de produtos gerais e de Graphics. Cada um tem
+ * valor por pallet próprio (geral = valor do cliente, Graphics =
+ * `valor_pallet_graphics`), então cada um é cobrado pelo seu próprio pico —
+ * não pela fatia de cada um no dia do pico total, que é diferente quando os dois
+ * atingem o máximo em dias diferentes.
+ *
+ * O Graphics entra nas movimentações como linhas sintéticas "gfx:" (ver
+ * `movsOcupacaoGraphics`). O estoque inicial do mês é o total (inclusive o
+ * saldo cadastrado à mão); o inicial do Graphics é a ocupação dele antes do mês
+ * e o geral é o restante.
+ *
+ * Sem Graphics: `ppPicoGeral` = pico normal e `ppPicoGraphics` = 0.
  */
-export function graphicsNoPicoMes(args: {
-  mes: string
+export function picosGeralEGraphics(args: {
+  /** Primeiro dia ('YYYY-MM-DD') do período da competência. */
+  inicioPeriodo: string
   volumeInicial: number
   movsContab: MovCalc[]
   todasMovs: MovCalc[]
-}): number {
-  const gfx = args.todasMovs.filter(m => ehMovGraphics(m) && !m.cancelada)
-  if (gfx.length === 0) return 0
-  const { pico, data } = picoComData(args.volumeInicial, args.movsContab)
-  const limite = data ?? `${args.mes}-00`          // pico = estoque inicial → antes do mês
-  const g = gfx.reduce((s, m) => {
+}): { temGraphics: boolean; inicialGeral: number; inicialGraphics: number; ppPicoGeral: number; ppPicoGraphics: number } {
+  const { inicioPeriodo, volumeInicial, movsContab, todasMovs } = args
+  const gfx = todasMovs.filter(m => ehMovGraphics(m) && !m.cancelada)
+  if (gfx.length === 0) {
+    return { temGraphics: false, inicialGeral: volumeInicial, inicialGraphics: 0, ppPicoGeral: calcPPPico(volumeInicial, movsContab), ppPicoGraphics: 0 }
+  }
+  const inicialGraphics = Math.max(0, gfx.reduce((s, m) => {
     const d = m.data_entrada || m.data_saida || ''
-    return d <= limite ? s + (m.pallets_entrada || 0) - (m.pallets_saida || 0) : s
-  }, 0)
-  return Math.max(0, Math.min(g, pico))
+    return d && d < inicioPeriodo ? s + (m.pallets_entrada || 0) - (m.pallets_saida || 0) : s
+  }, 0))
+  const inicialGeral = Math.max(0, volumeInicial - inicialGraphics)
+  return {
+    temGraphics: true,
+    inicialGeral,
+    inicialGraphics,
+    ppPicoGeral: calcPPPico(inicialGeral, movsContab.filter(m => !ehMovGraphics(m))),
+    ppPicoGraphics: calcPPPico(inicialGraphics, movsContab.filter(m => ehMovGraphics(m))),
+  }
 }
 
-/** Armazenagem s/ imposto: pallets normais no valor do cliente + pallets do Graphics no valor próprio. */
+/** Armazenagem s/ imposto: pico geral no valor do cliente + pico do Graphics no valor próprio. */
 export function armazenagemBase(args: {
-  ppPico: number
-  graphicsNoPico: number
+  ppPicoGeral: number
+  ppPicoGraphics: number
   valorPallet: number
   valorPalletGraphics?: number | null
 }): number {
   const vg = args.valorPalletGraphics ?? args.valorPallet
-  return (args.ppPico - args.graphicsNoPico) * args.valorPallet + args.graphicsNoPico * vg
+  return args.ppPicoGeral * args.valorPallet + args.ppPicoGraphics * vg
 }
 
 /**
@@ -441,9 +464,13 @@ export function calcularMesCliente(args: {
     valorCliente: cliente.valor_pallet,
     cnpj: cliente.cnpj,
   })
-  const ppPicoGraphics = graphicsNoPicoMes({ mes, volumeInicial, movsContab, todasMovs })
+  const { ppPicoGeral, ppPicoGraphics } = picosGeralEGraphics({
+    inicioPeriodo: periodoDaCompetencia(mes, diaInicio).inicio, volumeInicial, movsContab, todasMovs,
+  })
   const valorPalletGraphics = cliente.valor_pallet_graphics ?? valorPallet
-  const armazBase = armazenagemBase({ ppPico, graphicsNoPico: ppPicoGraphics, valorPallet, valorPalletGraphics })
+  const armazGeral = ppPicoGeral * valorPallet
+  const armazGraphics = ppPicoGraphics * valorPalletGraphics
+  const armazBase = armazenagemBase({ ppPicoGeral, ppPicoGraphics, valorPallet, valorPalletGraphics })
   const armazTotal = armazBase * (1 + aliquota / 100)
 
   const totalSeparacao =
@@ -472,7 +499,7 @@ export function calcularMesCliente(args: {
   return {
     mes, volumeInicial, valorPallet, aliquota, movsTodasMes, movsContab,
     movsSeparacao, excessos, totalEntradas, totalSaidas, saldoFinal, ppPico,
-    ppPicoGraphics, valorPalletGraphics, armazBase, armazTotal, totalSeparacao, totalManuseio, manuseioEfetivo,
+    ppPicoGeral, ppPicoGraphics, armazGeral, armazGraphics, valorPalletGraphics, armazBase, armazTotal, totalSeparacao, totalManuseio, manuseioEfetivo,
     totalCobrancas, totalGeral, totalSemImposto, totalComImposto,
     armazenagemNoTotal,
   }

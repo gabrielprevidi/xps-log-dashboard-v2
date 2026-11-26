@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
+import { CheckCircle2 } from 'lucide-react'
 import { resumoGraphicsMes, type GfxSku, type GfxMov } from '@/lib/graphics-saldo'
 
 const n = (v: number) => v.toLocaleString('pt-BR', { maximumFractionDigits: 1 })
@@ -27,6 +28,8 @@ export default function GraphicsPanel({ clienteId, mesAtual }: { clienteId: stri
   const [carregando, setCarregando] = useState(true)
   const [erro, setErro] = useState<string | null>(null)
   const [filtroSku, setFiltroSku] = useState<string | null>(null)
+  /** false enquanto o banco não tem as colunas de conferência (migration 033). */
+  const [conferencia, setConferencia] = useState(false)
 
   useEffect(() => {
     let vivo = true
@@ -37,11 +40,30 @@ export default function GraphicsPanel({ clienteId, mesAtual }: { clienteId: stri
         if (!r.ok) throw new Error(j.error || 'Erro ao carregar o Graphics')
         return j
       })
-      .then(j => { if (vivo) { setSkus(j.skus); setMovs(j.movimentacoes); setErro(null) } })
+      .then(j => { if (vivo) { setSkus(j.skus); setMovs(j.movimentacoes); setConferencia(j.conferencia === true); setErro(null) } })
       .catch(e => { if (vivo) setErro(e.message) })
       .finally(() => { if (vivo) setCarregando(false) })
     return () => { vivo = false }
   }, [clienteId])
+
+  // Conferência linha a linha, igual à das movimentações de produtos gerais
+  async function toggleVerificacao(mov: GfxMov) {
+    const novoValor = !mov.verificado
+    setMovs(prev => prev.map(m => m.id === mov.id ? { ...m, verificado: novoValor } : m))
+    try {
+      const res = await fetch(`/api/clientes/${clienteId}/graphics/movimentacoes/${mov.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ verificado: novoValor }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Falha ao marcar conferência')
+      setMovs(prev => prev.map(m => m.id === mov.id ? { ...m, ...data } : m))
+    } catch (e: unknown) {
+      setMovs(prev => prev.map(m => m.id === mov.id ? { ...m, verificado: mov.verificado } : m))
+      alert('Erro ao marcar conferência: ' + (e instanceof Error ? e.message : String(e)))
+    }
+  }
 
   const r = resumoGraphicsMes(skus, movs, mesAtual)
   const skuPorId = new Map(skus.map(s => [s.id, s]))
@@ -49,6 +71,7 @@ export default function GraphicsPanel({ clienteId, mesAtual }: { clienteId: stri
     .filter(m => m.data_mov.startsWith(mesAtual) && (!filtroSku || m.sku_id === filtroSku))
     .sort((a, b) => b.data_mov.localeCompare(a.data_mov) || (a.numero_nfe ?? '').localeCompare(b.numero_nfe ?? ''))
   const skuFiltrado = filtroSku ? skuPorId.get(filtroSku) : null
+  const conferidos = movsMes.filter(m => m.verificado).length
   const temDados = movs.length > 0
   const temAjuste = r.caixasAjuste !== 0 || r.linhas.some(l => l.ajustes !== 0)
 
@@ -87,7 +110,7 @@ export default function GraphicsPanel({ clienteId, mesAtual }: { clienteId: stri
             <div className="rounded-xl bg-blue-50 p-4">
               <p className="text-xs text-blue-700">Pico de palets no mês</p>
               <p className="text-2xl font-bold text-blue-900">{n(r.paletsPico)}</p>
-              <p className="text-xs text-blue-600 mt-1">maior ocupação diária</p>
+              <p className="text-xs text-blue-600 mt-1">base da cobrança do Graphics</p>
             </div>
             <div className="rounded-xl bg-gray-50 p-4">
               <p className="text-xs text-gray-500">Caixas no mês</p>
@@ -176,6 +199,11 @@ export default function GraphicsPanel({ clienteId, mesAtual }: { clienteId: stri
             <div className="flex items-center justify-between mb-2">
               <h3 className="text-sm font-semibold text-[#0d1b2e]">
                 Movimentações de {mesLabel(mesAtual)} <span className="text-xs font-normal text-gray-400">({movsMes.length}) — data e NF-e de cada lançamento</span>
+                {conferencia && movsMes.length > 0 && (
+                  <span className={`ml-2 text-xs font-medium ${conferidos === movsMes.length ? 'text-emerald-600' : 'text-gray-400'}`}>
+                    · {conferidos} de {movsMes.length} conferidos
+                  </span>
+                )}
               </h3>
               {skuFiltrado && (
                 <button onClick={() => setFiltroSku(null)} className="text-xs font-semibold text-blue-700 hover:underline">
@@ -193,11 +221,12 @@ export default function GraphicsPanel({ clienteId, mesAtual }: { clienteId: stri
                     <th className="px-3 py-2 text-left">Descrição</th>
                     <th className="px-3 py-2 text-left">Tipo</th>
                     <th className="px-3 py-2 text-right">Caixas</th>
+                    {conferencia && <th className="px-3 py-2 text-center">Conferido</th>}
                   </tr>
                 </thead>
                 <tbody>
                   {movsMes.length === 0 && (
-                    <tr><td colSpan={6} className="px-3 py-6 text-center text-gray-400">Nenhuma movimentação neste mês.</td></tr>
+                    <tr><td colSpan={conferencia ? 7 : 6} className="px-3 py-6 text-center text-gray-400">Nenhuma movimentação neste mês.</td></tr>
                   )}
                   {movsMes.map(m => {
                     const sku = skuPorId.get(m.sku_id)
@@ -213,6 +242,23 @@ export default function GraphicsPanel({ clienteId, mesAtual }: { clienteId: stri
                           </span>
                         </td>
                         <td className="px-3 py-1.5 text-right">{m.tipo === 'ajuste' && m.qtd_unidades > 0 ? '+' : ''}{n(m.qtd_unidades)}</td>
+                        {conferencia && (
+                          <td className="px-3 py-1 text-center">
+                            <button
+                              onClick={() => toggleVerificacao(m)}
+                              title={m.verificado
+                                ? `Conferido${m.verificado_por_nome ? ` por ${m.verificado_por_nome}` : ''}${m.verificado_em ? ` em ${new Date(m.verificado_em).toLocaleString('pt-BR')}` : ''} — clique para desmarcar`
+                                : 'Marcar como conferido'}
+                              className={`inline-flex items-center justify-center w-6 h-6 rounded-full border transition-colors ${
+                                m.verificado
+                                  ? 'bg-emerald-50 border-emerald-200 text-emerald-600 hover:bg-emerald-100'
+                                  : 'bg-white border-gray-200 text-gray-300 hover:border-emerald-300 hover:text-emerald-400'
+                              }`}
+                            >
+                              <CheckCircle2 size={13} />
+                            </button>
+                          </td>
+                        )}
                       </tr>
                     )
                   })}

@@ -32,6 +32,10 @@ export interface GfxMov {
   palets_declarados: number | null
   /** Ajuste que marca o inventário físico: a regra de palets recomeça dele. */
   inventario?: boolean
+  /** Conferência manual do lançamento (migration 033). */
+  verificado?: boolean | null
+  verificado_em?: string | null
+  verificado_por_nome?: string | null
 }
 
 export function deltaCaixas(m: Pick<GfxMov, 'tipo' | 'qtd_unidades'>): number {
@@ -108,7 +112,10 @@ export interface ResumoGraphicsMes {
   /** Palets que passaram a ser ocupados / foram liberados no mês. */
   paletsEntrada: number
   paletsSaida: number
-  /** Maior ocupação diária de palets no mês — base de cobrança, como no restante da Avery. */
+  /**
+   * Pico de palets do mês — base de cobrança do Graphics. Conta a ocupação na
+   * virada do mês, como `calcPPPico` nos produtos gerais.
+   */
   paletsPico: number
   dias: Array<{ dia: number; palets: number }>
   /** Palets declarados nas NF-e do mês (campo ESPÉCIE). */
@@ -132,6 +139,7 @@ export function resumoGraphicsMes(skus: GfxSku[], movs: GfxMov[], competencia: s
 
   const linhas: LinhaSku[] = []
   const palDia = new Array<number>(diasNoMes).fill(0)
+  let ocupacaoVirada = 0   // palets ocupados no fim do dia anterior ao mês
   const negativos: string[] = []
 
   for (const sku of skus) {
@@ -154,6 +162,7 @@ export function resumoGraphicsMes(skus: GfxSku[], movs: GfxMov[], competencia: s
     if (saldoFim === 0 && saldoInicio === 0 && noMes.length === 0 && !dataInv) continue   // SKU sem relação com o mês
     if (saldoFim < 0) negativos.push(sku.codigo)
 
+    ocupacaoVirada += paletsOcupados(acumuladoSku(doSku, undefined, ini), fator)
     // ocupação diária (fim de cada dia)
     for (let d = 1; d <= diasNoMes; d++) {
       const limite = `${competencia}-${String(d).padStart(2, '0')}`
@@ -187,7 +196,7 @@ export function resumoGraphicsMes(skus: GfxSku[], movs: GfxMov[], competencia: s
     paletsFim: soma(l => l.paletsFim),
     paletsEntrada: soma(l => l.paletsEntradaMes),
     paletsSaida: soma(l => l.paletsSaidaMes),
-    paletsPico: palDia.reduce((mx, v) => Math.max(mx, v), 0),
+    paletsPico: palDia.reduce((mx, v) => Math.max(mx, v), ocupacaoVirada),
     dias: palDia.map((palets, i) => ({ dia: i + 1, palets })),
     declaradosEntrada: declarados('entrada'),
     declaradosSaida: declarados('saida'),
